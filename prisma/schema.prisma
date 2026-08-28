@@ -1,10 +1,16 @@
 // Prisma schema — Ekosistem Presensi & Perkembangan Ekstrakurikuler SD
 //
-// FASE 0: hanya datasource + generator sebagai kerangka.
-// Konversi lengkap dari DDL (system-design-ekosistem-ekskul-sd.md bagian 3.2)
-// menjadi model Prisma + migration files dikerjakan pada prompt Fase 0.2.
+// Konversi 1:1 dari DDL PostgreSQL pada dokumen desain sistem
+// (system-design-ekosistem-ekskul-sd.md — bagian 3.2 "DDL Script (PostgreSQL)").
 //
-// Referensi: docs -> ../../system-design-ekosistem-ekskul-sd.md
+// Aturan konversi yang dipegang:
+//  - Nama tabel & kolom TIDAK diubah (pakai @@map / @map ke snake_case DDL asli).
+//  - Semua UNIQUE, index, dan default DB dipertahankan persis (index diberi nama
+//    lewat `map:` agar identik dengan DDL).
+//  - CHECK constraint tidak bisa dinyatakan di schema Prisma → ditambahkan sebagai
+//    raw SQL pada file migration (lihat prisma/migrations/*/migration.sql).
+//  - FK "bare" pada DDL (tanpa ON DELETE) dipetakan ke onDelete/onUpdate: NoAction.
+//  - FK "ON DELETE CASCADE" pada DDL dipetakan ke onDelete: Cascade.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,7 +21,270 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// --- Model entitas akan ditambahkan di Fase 0.2 ---
-// roles, users, coaches, students, parents, parent_student_relations,
-// extracurriculars, extracurricular_schedules, extracurricular_members,
-// attendance_sessions, attendance_details, notifications, audit_logs
+// ============================================
+// 1. ROLES & USERS (Autentikasi & Otorisasi)
+// ============================================
+
+model Role {
+  id   Int    @id @default(autoincrement()) @db.SmallInt
+  code String @unique @db.VarChar(20) // 'ADMIN','PEMBINA','ORANGTUA'
+  name String @db.VarChar(50)
+
+  users User[]
+
+  @@map("roles")
+}
+
+model User {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  roleId       Int       @map("role_id") @db.SmallInt
+  fullName     String    @map("full_name") @db.VarChar(150)
+  email        String?   @unique @db.VarChar(150)
+  phoneNumber  String?   @unique @map("phone_number") @db.VarChar(20)
+  passwordHash String    @map("password_hash")
+  avatarUrl    String?   @map("avatar_url")
+  isActive     Boolean   @default(true) @map("is_active")
+  mfaEnabled   Boolean   @default(false) @map("mfa_enabled")
+  lastLoginAt  DateTime? @map("last_login_at") @db.Timestamptz(6)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  role              Role                    @relation(fields: [roleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  coach             Coach?
+  parent            Parent?
+  notifications     Notification[]
+  auditLogs         AuditLog[]
+  approvedRelations ParentStudentRelation[] @relation("RelationApprover")
+
+  @@index([roleId], map: "idx_users_role")
+  @@map("users")
+}
+
+// ============================================
+// 2. COACHES (Guru Pembina - ekstensi profil)
+// ============================================
+
+model Coach {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String   @unique @map("user_id") @db.Uuid
+  employeeNumber String?  @unique @map("employee_number") @db.VarChar(30)
+  specialization String?  @db.VarChar(100)
+  bio            String?
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user               User                @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  defaultForEkskul   Extracurricular[]   @relation("ExtracurricularDefaultCoach")
+  attendanceSessions AttendanceSession[]
+
+  @@map("coaches")
+}
+
+// ============================================
+// 3. STUDENTS (Data siswa)
+// ============================================
+
+model Student {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nis              String    @unique @db.VarChar(30) // Nomor Induk Siswa
+  fullName         String    @map("full_name") @db.VarChar(150)
+  classGrade       String    @map("class_grade") @db.VarChar(20) // contoh: '4A'
+  gender           String?   @db.Char(1) // CHECK (gender IN ('L','P')) — di migration
+  dateOfBirth      DateTime? @map("date_of_birth") @db.Date
+  photoUrl         String?   @map("photo_url")
+  qrToken          String    @unique @map("qr_token") @db.VarChar(64) // token acak, BUKAN NIS, dapat dirotasi
+  qrTokenRotatedAt DateTime? @map("qr_token_rotated_at") @db.Timestamptz(6)
+  isActive         Boolean   @default(true) @map("is_active")
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  parentRelations   ParentStudentRelation[]
+  memberships       ExtracurricularMember[]
+  attendanceDetails AttendanceDetail[]
+
+  @@index([classGrade], map: "idx_students_class")
+  @@index([qrToken], map: "idx_students_qr")
+  @@map("students")
+}
+
+// ============================================
+// 4. PARENTS & RELASI ORTU-SISWA
+// ============================================
+
+model Parent {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String   @unique @map("user_id") @db.Uuid
+  relationType     String   @map("relation_type") @db.VarChar(20) // 'AYAH','IBU','WALI'
+  identityVerified Boolean  @default(false) @map("identity_verified")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user      User                    @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  relations ParentStudentRelation[]
+
+  @@map("parents")
+}
+
+// Many-to-many ortu<->siswa lewat tabel penghubung eksplisit + alur approval admin.
+model ParentStudentRelation {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  parentId         String    @map("parent_id") @db.Uuid
+  studentId        String    @map("student_id") @db.Uuid
+  isPrimaryContact Boolean   @default(false) @map("is_primary_contact")
+  approvalStatus   String    @default("PENDING") @map("approval_status") @db.VarChar(20) // PENDING/APPROVED/REJECTED
+  approvedBy       String?   @map("approved_by") @db.Uuid
+  approvedAt       DateTime? @map("approved_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  parent   Parent  @relation(fields: [parentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  student  Student @relation(fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  approver User?   @relation("RelationApprover", fields: [approvedBy], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([parentId, studentId])
+  @@index([studentId], map: "idx_psr_student")
+  @@index([approvalStatus], map: "idx_psr_status")
+  @@map("parent_student_relations")
+}
+
+// ============================================
+// 5. EKSTRAKURIKULER & JADWAL
+// ============================================
+
+model Extracurricular {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name           String   @db.VarChar(100)
+  category       String?  @db.VarChar(50) // 'OLAHRAGA','SENI','AKADEMIK', dst
+  description    String?
+  defaultCoachId String?  @map("default_coach_id") @db.Uuid
+  maxCapacity    Int?     @map("max_capacity")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  defaultCoach       Coach?                    @relation("ExtracurricularDefaultCoach", fields: [defaultCoachId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  schedules          ExtracurricularSchedule[]
+  members            ExtracurricularMember[]
+  attendanceSessions AttendanceSession[]
+
+  @@map("extracurriculars")
+}
+
+model ExtracurricularSchedule {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  extracurricularId String   @map("extracurricular_id") @db.Uuid
+  dayOfWeek         Int      @map("day_of_week") @db.SmallInt // 1=Senin, CHECK BETWEEN 1 AND 7 — di migration
+  startTime         DateTime @map("start_time") @db.Time(6)
+  endTime           DateTime @map("end_time") @db.Time(6)
+  location          String?  @db.VarChar(100)
+  isActive          Boolean  @default(true) @map("is_active")
+
+  extracurricular    Extracurricular     @relation(fields: [extracurricularId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  attendanceSessions AttendanceSession[]
+
+  @@index([extracurricularId], map: "idx_schedule_ekskul")
+  @@map("extracurricular_schedules")
+}
+
+model ExtracurricularMember {
+  id                String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  extracurricularId String   @map("extracurricular_id") @db.Uuid
+  studentId         String   @map("student_id") @db.Uuid
+  joinedDate        DateTime @default(dbgenerated("CURRENT_DATE")) @map("joined_date") @db.Date
+  status            String   @default("ACTIVE") @db.VarChar(20) // ACTIVE/INACTIVE/GRADUATED
+
+  extracurricular Extracurricular @relation(fields: [extracurricularId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  student         Student         @relation(fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([extracurricularId, studentId])
+  @@index([studentId], map: "idx_member_student")
+  @@map("extracurricular_members")
+}
+
+// ============================================
+// 6. PRESENSI (Sesi & Detail)
+// ============================================
+
+model AttendanceSession {
+  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  extracurricularId   String    @map("extracurricular_id") @db.Uuid
+  coachId             String    @map("coach_id") @db.Uuid
+  scheduleId          String?   @map("schedule_id") @db.Uuid
+  sessionDate         DateTime  @map("session_date") @db.Date
+  startTime           DateTime? @map("start_time") @db.Time(6)
+  endTime             DateTime? @map("end_time") @db.Time(6)
+  location            String?   @db.VarChar(100)
+  materialDescription String?   @map("material_description") // porsi/materi latihan
+  durationMinutes     Int?      @map("duration_minutes")
+  targetAchievement   String?   @map("target_achievement")
+  status              String    @default("DRAFT") @db.VarChar(20) // DRAFT/SUBMITTED/SYNCED
+  clientGeneratedId   String?   @unique @map("client_generated_id") @db.Uuid // idempotency key dari mobile offline
+  submittedAt         DateTime? @map("submitted_at") @db.Timestamptz(6)
+  createdAt           DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  extracurricular Extracurricular          @relation(fields: [extracurricularId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  coach           Coach                    @relation(fields: [coachId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  schedule        ExtracurricularSchedule? @relation(fields: [scheduleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  details         AttendanceDetail[]
+
+  @@unique([extracurricularId, sessionDate, coachId])
+  @@index([sessionDate], map: "idx_sessions_date")
+  @@index([coachId], map: "idx_sessions_coach")
+  @@map("attendance_sessions")
+}
+
+model AttendanceDetail {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId       String   @map("session_id") @db.Uuid
+  studentId       String   @map("student_id") @db.Uuid
+  status          String   @db.VarChar(10) // CHECK IN ('HADIR','IZIN','SAKIT','ALPA') — di migration
+  activenessScore Int?     @map("activeness_score") @db.SmallInt // CHECK BETWEEN 1 AND 5 — di migration
+  skillNotes      String?  @map("skill_notes") // pencapaian fisik/keterampilan
+  personalNotes   String?  @map("personal_notes") // catatan khusus pembina
+  recordedAt      DateTime @default(now()) @map("recorded_at") @db.Timestamptz(6)
+
+  session AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  student Student           @relation(fields: [studentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([sessionId, studentId])
+  @@index([studentId], map: "idx_details_student")
+  @@index([sessionId], map: "idx_details_session")
+  @@map("attendance_details")
+}
+
+// ============================================
+// 7. NOTIFIKASI
+// ============================================
+
+model Notification {
+  id      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId  String   @map("user_id") @db.Uuid
+  type    String   @db.VarChar(30) // 'ATTENDANCE_DONE','WEEKLY_REPORT', dst
+  title   String   @db.VarChar(150)
+  body    String?
+  payload Json?    @db.JsonB
+  isRead  Boolean  @default(false) @map("is_read")
+  sentAt  DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([userId, isRead], map: "idx_notif_user")
+  @@map("notifications")
+}
+
+// ============================================
+// 8. AUDIT LOG (kepatuhan & keamanan data anak)
+// ============================================
+
+model AuditLog {
+  id         BigInt   @id @default(autoincrement())
+  userId     String?  @map("user_id") @db.Uuid
+  action     String   @db.VarChar(50) // 'VIEW_STUDENT_DATA','EXPORT_REPORT', dst
+  entityType String   @map("entity_type") @db.VarChar(50) // 'student','attendance_session', dst
+  entityId   String?  @map("entity_id") @db.Uuid
+  ipAddress  String?  @map("ip_address") @db.Inet
+  metadata   Json?    @db.JsonB
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([userId], map: "idx_audit_user")
+  @@index([entityType, entityId], map: "idx_audit_entity")
+  @@map("audit_logs")
+}
