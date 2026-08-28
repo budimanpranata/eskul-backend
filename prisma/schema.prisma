@@ -1,0 +1,21 @@
+// Prisma schema — Ekosistem Presensi & Perkembangan Ekstrakurikuler SD
+//
+// FASE 0: hanya datasource + generator sebagai kerangka.
+// Konversi lengkap dari DDL (system-design-ekosistem-ekskul-sd.md bagian 3.2)
+// menjadi model Prisma + migration files dikerjakan pada prompt Fase 0.2.
+//
+// Referensi: docs -> ../../system-design-ekosistem-ekskul-sd.md
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- Model entitas akan ditambahkan di Fase 0.2 ---
+// roles, users, coaches, students, parents, parent_student_relations,
+// extracurriculars, extracurricular_schedules, extracurricular_members,
+// attendance_sessions, attendance_details, notifications, audit_logs
