@@ -12,6 +12,7 @@ import {
   Query,
 } from '@nestjs/common';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
@@ -30,6 +31,7 @@ export class CoachController {
   }
 
   @Get('extracurriculars/:id/roster')
+  @Audit({ action: 'VIEW_EXTRACURRICULAR_ROSTER', entityType: 'extracurricular', entityIdParam: 'id' })
   roster(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.attendance.roster(user.id, id);
   }

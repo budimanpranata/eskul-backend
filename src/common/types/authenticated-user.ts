@@ -1,5 +1,15 @@
-/** Kode role sesuai tabel `roles` (seed Fase 0.2). */
-export type RoleCode = 'ADMIN' | 'PEMBINA' | 'ORANGTUA';
+/**
+ * Kode role sesuai tabel `roles`.
+ * `ADMIN_SUPER` = admin dengan sub-permission penuh (mis. lihat audit log — Fase 4.1);
+ * mewarisi seluruh hak `ADMIN` (lihat `roleSatisfies`).
+ */
+export type RoleCode = 'ADMIN_SUPER' | 'ADMIN' | 'PEMBINA' | 'ORANGTUA';
+
+/** Hierarki role: ADMIN_SUPER memenuhi kebutuhan role ADMIN. */
+export function roleSatisfies(userRole: RoleCode, required: RoleCode): boolean {
+  if (userRole === required) return true;
+  return userRole === 'ADMIN_SUPER' && required === 'ADMIN';
+}
 
 /** Payload di dalam JWT access token. */
 export interface AccessTokenPayload {

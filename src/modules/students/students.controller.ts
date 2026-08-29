@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
@@ -31,11 +32,17 @@ export class StudentsController {
   constructor(private readonly students: StudentsService) {}
 
   @Get()
+  @Audit({
+    action: 'LIST_STUDENTS',
+    entityType: 'student',
+    captureQuery: ['search', 'classGrade', 'isActive', 'page', 'pageSize'],
+  })
   list(@Query() query: ListStudentsQueryDto) {
     return this.students.list(query);
   }
 
   @Get(':id')
+  @Audit({ action: 'VIEW_STUDENT_DATA', entityType: 'student', entityIdParam: 'id' })
   getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.students.getById(id);
   }

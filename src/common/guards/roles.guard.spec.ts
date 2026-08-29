@@ -42,4 +42,14 @@ describe('RolesGuard', () => {
     vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN']);
     expect(() => guard.canActivate(contextWithUser())).toThrowError(ForbiddenException);
   });
+
+  it('ADMIN_SUPER memenuhi @Roles("ADMIN") (hierarki role)', () => {
+    vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN']);
+    expect(guard.canActivate(contextWithUser('ADMIN_SUPER'))).toBe(true);
+  });
+
+  it('ADMIN biasa TIDAK bisa mengakses endpoint @Roles("ADMIN_SUPER") → 403', () => {
+    vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(['ADMIN_SUPER']);
+    expect(() => guard.canActivate(contextWithUser('ADMIN'))).toThrowError(ForbiddenException);
+  });
 });

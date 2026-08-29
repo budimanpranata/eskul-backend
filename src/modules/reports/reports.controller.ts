@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
@@ -36,6 +37,11 @@ export class ReportsController {
   /** Preview tabel data sebelum export. */
   @Roles('ADMIN')
   @Get('attendance/preview')
+  @Audit({
+    action: 'PREVIEW_REPORT',
+    entityType: 'report',
+    captureQuery: ['classGrade', 'extracurricularId', 'dateFrom', 'dateTo'],
+  })
   preview(@Query() query: ReportPreviewQueryDto) {
     return this.reports.preview(query);
   }
@@ -69,6 +75,7 @@ export class ReportsController {
   /** Unduh file — hanya lewat signed URL yang valid & belum kedaluwarsa. */
   @Public()
   @Get('downloads/:id')
+  @Audit({ action: 'DOWNLOAD_REPORT', entityType: 'report_export', entityIdParam: 'id' })
   @Header('Cache-Control', 'no-store')
   async download(
     @Param('id', ParseUUIDPipe) id: string,

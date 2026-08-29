@@ -304,6 +304,10 @@ model AuditLog {
 
   @@index([userId], map: "idx_audit_user")
   @@index([entityType, entityId], map: "idx_audit_entity")
+  @@index([createdAt], map: "idx_audit_created")
+  @@index([action], map: "idx_audit_action")
+  // GIN trigram index atas metadata::text untuk free-text search — ditambah manual
+  // di migration (Prisma tidak mendukung index ekspresi / pg_trgm).
   @@map("audit_logs")
 }
 

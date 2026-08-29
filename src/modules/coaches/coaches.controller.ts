@@ -11,6 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
@@ -26,11 +27,13 @@ export class CoachesController {
   constructor(private readonly coaches: CoachesService) {}
 
   @Get()
+  @Audit({ action: 'LIST_COACHES', entityType: 'coach', captureQuery: ['search', 'isActive'] })
   list(@Query() query: ListCoachesQueryDto) {
     return this.coaches.list(query);
   }
 
   @Get(':id')
+  @Audit({ action: 'VIEW_COACH_DATA', entityType: 'coach', entityIdParam: 'id' })
   getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.coaches.getById(id);
   }

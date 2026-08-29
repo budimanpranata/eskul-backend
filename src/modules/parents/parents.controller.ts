@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Ip, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
@@ -13,6 +14,7 @@ export class ParentsController {
   constructor(private readonly parents: ParentsService) {}
 
   @Get('children')
+  @Audit({ action: 'LIST_LINKED_CHILDREN', entityType: 'student' })
   children(@CurrentUser() user: AuthenticatedUser) {
     return this.parents.children(user.id);
   }

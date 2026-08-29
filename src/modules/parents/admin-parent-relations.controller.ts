@@ -1,5 +1,6 @@
 import { Body, Controller, Get, Ip, Param, ParseUUIDPipe, Put, Query } from '@nestjs/common';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
@@ -16,6 +17,7 @@ export class AdminParentRelationsController {
   constructor(private readonly parents: ParentsService) {}
 
   @Get()
+  @Audit({ action: 'LIST_PARENT_RELATIONS', entityType: 'parent_student_relation', captureQuery: ['status'] })
   list(@Query() query: ListRelationsQueryDto) {
     return this.parents.listRelations(query.status, query.page, query.pageSize);
   }

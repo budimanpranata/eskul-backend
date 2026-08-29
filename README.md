@@ -7,10 +7,10 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 3.3 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
-> 2.3 nilai keaktifan + 2.4 Approval Relasi Ortu + 3.1 Export Laporan PDF/Excel +
-> 3.2 Dashboard Analitik + **3.3 Laporan Berkala Otomatis** (cron `@nestjs/schedule`
-> → fan-out + batch BullMQ → notifikasi `WEEKLY_REPORT` / `MONTHLY_REPORT`, idempoten).
+> **Status: Fase 4.1 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 (Fase 3 lengkap) +
+> **4.1 Audit Log Lengkap** — `AuditInterceptor` global berbasis `@Audit(...)` mencatat
+> semua akses data siswa/ortu ke `audit_logs`; `GET /admin/audit-logs` (filter + free-text
+> JSONB) khusus role **`ADMIN_SUPER`**.
 
 ## Struktur folder
 
@@ -22,20 +22,22 @@ backend/
 │   │   ├── 20260828233836_init/        # DDL lengkap (+ pgcrypto + 4 CHECK) + down.sql
 │   │   ├── 20260829063133_add_device_tokens/  # tabel device_tokens (FCM) + down.sql
 │   │   ├── 20260829123518_add_report_exports/ # tabel report_exports (job export) + down.sql
+│   │   ├── 20260829230003_add_audit_log_indexes/ # idx created_at/action + GIN trgm metadata + down.sql
 │   │   └── migration_lock.toml
-│   └── seed.ts              # roles (ADMIN/PEMBINA/ORANGTUA) + 1 admin dummy (idempoten)
+│   └── seed.ts              # roles (ADMIN_SUPER/ADMIN/PEMBINA/ORANGTUA) + 2 admin dummy (idempoten)
 ├── src/
 │   ├── config/configuration.ts # env terpusat (ConfigModule)
 │   ├── prisma/                  # PrismaModule + PrismaService (global)
 │   ├── redis/                   # RedisModule + RedisService (global)
 │   ├── queue/                   # QueueModule — BullMQ di atas Redis (attempts:3, backoff exp) (Fase 1.5)
 │   ├── common/
-│   │   ├── decorators/         # @Public, @Roles, @CurrentUser
-│   │   ├── guards/             # JwtAuthGuard, RolesGuard (dipasang global oleh AuthModule)
-│   │   └── types/              # AuthenticatedUser, RoleCode, *TokenPayload
+│   │   ├── decorators/         # @Public, @Roles, @CurrentUser, @Audit (Fase 4.1)
+│   │   ├── guards/             # JwtAuthGuard, RolesGuard (+ hierarki ADMIN_SUPER⊃ADMIN)
+│   │   ├── interceptors/       # AuditInterceptor global — tulis audit_logs dari @Audit (Fase 4.1)
+│   │   └── types/              # AuthenticatedUser, RoleCode, roleSatisfies, *TokenPayload
 │   ├── modules/
 │   │   ├── auth/            # ✅ login/refresh/logout/me + TokenService (JWT+Redis)  (Fase 1.1)
-│   │   ├── audit/           # ✅ AuditService.log() → audit_logs (global)            (Fase 1.1)
+│   │   ├── audit/           # ✅ AuditService.log()/query()/facets() + GET /admin/audit-logs (ADMIN_SUPER)  (1.1/4.1)
 │   │   ├── users/           # akun users lintas-role
 │   │   ├── students/        # ✅ CRUD + soft-delete + qr_token + import Excel        (Fase 1.2)
 │   │   ├── coaches/         # ✅ CRUD (buat user PEMBINA) + soft-delete              (Fase 1.2)
@@ -161,7 +163,10 @@ Dua guard **global** (terdaftar di `AuthModule` via `APP_GUARD`, urutan: auth �
 @Get('admin/students') ...
 ```
 
-Helper di `src/common/`: `@Public()`, `@Roles(...)`, `@CurrentUser()`, tipe `AuthenticatedUser` / `RoleCode`.
+Helper di `src/common/`: `@Public()`, `@Roles(...)`, `@CurrentUser()`, `@Audit(...)`, tipe
+`AuthenticatedUser` / `RoleCode`. Role: `ADMIN_SUPER` ⊃ `ADMIN` ⊃ … (`roleSatisfies()` di
+`RolesGuard` — `@Roles('ADMIN')` juga lolos untuk `ADMIN_SUPER`; `@Roles('ADMIN_SUPER')` tidak
+lolos untuk `ADMIN` biasa).
 
 ## Data Master admin (Fase 1.2)
 
@@ -328,6 +333,48 @@ siswa lalu `NotificationsService.enqueueUserNotification` satu per wali `APPROVE
 respons `/run` 6 ms, `/auth/me` p95 **10 ms** selama worker jalan, 2.000 notifikasi terkirim,
 re-run `force` → tetap 2.000 (nol duplikat).
 
+## Audit Log Lengkap & Review (Fase 4.1)
+
+**Mekanisme.** `@Audit({ action, entityType, entityIdParam?, captureQuery? })` di handler +
+`AuditInterceptor` global (`APP_INTERCEPTOR` di `AuditModule`) menulis **satu baris
+`audit_logs` otomatis** setelah request selesai — sukses (`metadata.outcome:'success'`)
+maupun gagal (`outcome:'error'` + `statusCode`). Tidak ada `audit.log()` manual untuk
+akses-baca; kegagalan tulis audit tidak pernah menggagalkan request.
+
+**Sub-permission.** Role baru **`ADMIN_SUPER`** (seed) — `roleSatisfies()` membuatnya
+mewarisi seluruh hak `ADMIN`, tetapi `GET /admin/audit-logs*` `@Roles('ADMIN_SUPER')`
+saja. Seed dev: `admin@eskul.test` (`ADMIN`) & `superadmin@eskul.test` / `Super#12345` (`ADMIN_SUPER`).
+
+| Endpoint (`@Roles('ADMIN_SUPER')`) | Fungsi |
+|---|---|
+| `GET /admin/audit-logs?userId&action&entityType&entityId&dateFrom&dateTo&q&page&pageSize` | Query ber-filter. `q` = free-text di `action` / `metadata::text` / nama & email user. Raw SQL → pakai `idx_audit_created/action/entity` + **GIN trigram `idx_audit_metadata_trgm`**. |
+| `GET /admin/audit-logs/facets` | `{ actions[], entityTypes[] }` untuk dropdown filter. |
+
+Migration `20260829230003_add_audit_log_indexes`: `idx_audit_created`, `idx_audit_action`,
+`CREATE EXTENSION pg_trgm` + `idx_audit_metadata_trgm` (GIN atas `(metadata::text)`), + `down.sql`.
+**Skala:** 500 k baris → filter action+tanggal 52 ms, entityType+paginasi 49 ms, `userId` 58 ms,
+free-text trigram 937 ms, facets 84 ms (semua < 3 dtk — DoD).
+
+### Checklist cakupan audit (endpoint yang menyentuh data personal siswa/ortu)
+
+| Endpoint | Aksi audit | Mekanisme |
+|---|---|---|
+| `GET /admin/students` | `LIST_STUDENTS` | `@Audit` interceptor |
+| `GET /admin/students/:id` | `VIEW_STUDENT_DATA` | `@Audit` interceptor |
+| `GET /admin/coaches` / `:id` | `LIST_COACHES` / `VIEW_COACH_DATA` | `@Audit` interceptor |
+| `GET /admin/extracurriculars/:id/members` | `VIEW_EXTRACURRICULAR_ROSTER` | `@Audit` interceptor |
+| `GET /coach/extracurriculars/:id/roster` | `VIEW_EXTRACURRICULAR_ROSTER` | `@Audit` interceptor |
+| `GET /parent/children` | `LIST_LINKED_CHILDREN` | `@Audit` interceptor |
+| `GET /parent/child-progress/:id` | `VIEW_STUDENT_DATA` | service (metadata kaya: period/from/to) |
+| `GET /admin/parent-relations` | `LIST_PARENT_RELATIONS` | `@Audit` interceptor |
+| `GET /admin/reports/attendance/preview` | `PREVIEW_REPORT` | `@Audit` interceptor |
+| `GET /admin/reports/attendance?format=` | `EXPORT_REPORT` | service (metadata: format + filter) |
+| `GET /admin/reports/downloads/:id` (`@Public`) | `DOWNLOAD_REPORT` | `@Audit` interceptor |
+| `GET /admin/analytics/overview` | `VIEW_ANALYTICS_OVERVIEW` | `@Audit` interceptor |
+| CRUD siswa/pembina/anggota, submit presensi, QR scan/rotasi, register/approve relasi ortu, run laporan berkala | `CREATE_*`/`UPDATE_*`/`ENROLL_*`/`SUBMIT_ATTENDANCE`/`QR_SCAN`/`ROTATE_QR_TOKEN`/`APPROVE_PARENT_RELATION`/… | service-level `audit.log()` (sudah 100% sejak Fase 1.2–3.3) |
+| Auth | `LOGIN_SUCCESS/FAILED`, `LOGOUT`, `TOKEN_REFRESH` | service (Fase 1.1) |
+| **Tidak diaudit (bukan data personal):** `GET /coach/today-sessions` & `/coach/sessions` (jadwal/agregat milik sendiri), `GET /admin/extracurriculars` & `/:id` (metadata ekskul), `GET /admin/reports/exports*` (status job), `GET /notifications/*` (inbox sendiri), `GET /auth/me` | — | — |
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -461,3 +508,12 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Ringkasan bulanan menyertakan tren vs bulan sebelumnya (`naik`/`turun`/`stabil`) — **unit + e2e (100% vs 50% → naik)**
 - [x] Pemicu manual `POST /admin/periodic-reports/run` (`@Roles('ADMIN')`, audit `RUN_PERIODIC_REPORT`)
 - [x] E2E berkala vs Postgres+Redis nyata: 15/15 assertion; **123 unit test** hijau (+17 dari 3.3); dep baru `@nestjs/schedule@12`
+
+### Fase 4.1 (backend)
+- [x] Interceptor global mencakup **100%** endpoint yang menyentuh data personal siswa/ortu — lihat **checklist cakupan audit** di atas (bukan spot check): 9 read via `@Audit`, sisanya via `audit.log()` service-level yang memang sudah 100%
+- [x] `AuditInterceptor` mencatat sukses (`outcome:'success'`) **dan** percobaan gagal (`outcome:'error'` + `statusCode`) — **unit + e2e (404 tetap tercatat)**
+- [x] `GET /admin/audit-logs` memfilter < 3 detik untuk log berskala besar — **e2e skala 500 k baris: action+tanggal 52 ms, userId 58 ms, free-text trigram 937 ms, facets 84 ms**
+- [x] Free-text search di `metadata` (JSONB) — GIN trigram `idx_audit_metadata_trgm`; juga cocok pada nama/email user — **e2e**
+- [x] Halaman audit **read-only** + sub-permission — hanya `ADMIN_SUPER` (403 untuk `ADMIN` biasa), `POST /admin/audit-logs` → 404 — **unit (RolesGuard hierarki) + e2e**
+- [x] Migration indeks + `down.sql` terverifikasi (drop bersih → re-apply bersih)
+- [x] **136 unit test** hijau (+13 dari 4.1)

@@ -11,6 +11,7 @@ import {
   Query,
 } from '@nestjs/common';
 
+import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto.js';
@@ -117,6 +118,7 @@ export class ExtracurricularsController {
 
   // --- anggota ---
   @Get(':id/members')
+  @Audit({ action: 'VIEW_EXTRACURRICULAR_ROSTER', entityType: 'extracurricular', entityIdParam: 'id' })
   listMembers(@Param('id', ParseUUIDPipe) id: string, @Query() q: PaginationQueryDto) {
     return this.ekskul.listMembers(id, q.page, q.pageSize);
   }
