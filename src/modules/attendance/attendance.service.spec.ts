@@ -59,7 +59,12 @@ describe('AttendanceService.submit', () => {
       $transaction: vi.fn().mockResolvedValue('new-session-id'),
     };
     audit = { log: vi.fn().mockResolvedValue(undefined) };
-    service = new AttendanceService(prisma as unknown as PrismaService, audit as unknown as AuditService);
+    const notifications = { enqueueAttendanceDone: vi.fn().mockResolvedValue(undefined) };
+    service = new AttendanceService(
+      prisma as unknown as PrismaService,
+      audit as unknown as AuditService,
+      notifications as never,
+    );
   });
 
   it('sukses → 201-style payload + audit SUBMIT_ATTENDANCE', async () => {

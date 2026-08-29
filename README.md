@@ -7,25 +7,25 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 1.4 selesai.** 0.1–1.3 + **1.4 Dashboard Orang Tua**
-> (`/auth/register`, `/parent/*`, `/admin/parent-relations/*`).
+> **Status: Fase 1.5 selesai.** 0.1–1.4 + **1.5 Notifikasi Push** (BullMQ queue,
+> `notifications` module, migration `device_tokens`).
 
 ## Struktur folder
 
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # 13 model, konversi 1:1 dari DDL dokumen desain §3.2
+│   ├── schema.prisma        # 14 model (13 dari DDL §3.2 + device_tokens Fase 1.5)
 │   ├── migrations/
-│   │   ├── 20260828233836_init/
-│   │   │   ├── migration.sql   # DDL lengkap (+ extension pgcrypto + 4 CHECK constraint)
-│   │   │   └── down.sql        # rollback manual (Prisma tak punya revert per-migration)
+│   │   ├── 20260828233836_init/        # DDL lengkap (+ pgcrypto + 4 CHECK) + down.sql
+│   │   ├── 20260829063133_add_device_tokens/  # tabel device_tokens (FCM) + down.sql
 │   │   └── migration_lock.toml
 │   └── seed.ts              # roles (ADMIN/PEMBINA/ORANGTUA) + 1 admin dummy (idempoten)
 ├── src/
 │   ├── config/configuration.ts # env terpusat (ConfigModule)
 │   ├── prisma/                  # PrismaModule + PrismaService (global)
 │   ├── redis/                   # RedisModule + RedisService (global)
+│   ├── queue/                   # QueueModule — BullMQ di atas Redis (attempts:3, backoff exp) (Fase 1.5)
 │   ├── common/
 │   │   ├── decorators/         # @Public, @Roles, @CurrentUser
 │   │   ├── guards/             # JwtAuthGuard, RolesGuard (dipasang global oleh AuthModule)
@@ -39,7 +39,7 @@ backend/
 │   │   ├── extracurriculars/# ✅ CRUD + jadwal (anti-bentrok) + anggota (kapasitas)  (Fase 1.2)
 │   │   ├── attendance/      # ✅ POST /attendance/submit + /coach/* (today/roster/history)  (Fase 1.3)
 │   │   ├── parents/         # ✅ /parent/* (children, link-request, child-progress) + /admin/parent-relations  (Fase 1.4)
-│   │   ├── notifications/   # push FCM via job queue        (Fase 1.5)
+│   │   ├── notifications/   # ✅ BullMQ processor + inbox + device tokens + PushSender  (Fase 1.5)
 │   │   └── reports/         # export PDF/Excel async        (Fase 3.1)
 │   ├── app.module.ts
 │   └── main.ts             # global prefix /api/v1, helmet, CORS, ValidationPipe
@@ -213,6 +213,29 @@ Ekskul tanpa sesi tetap muncul (`total_sessions:0`). Akses → audit `VIEW_STUDE
 
 > Notifikasi push saat approve/reject & anti-spam pengajuan ulang → Fase 1.5 / 2.4.
 
+## Notifikasi Push (Fase 1.5)
+
+**Alur:** `POST /attendance/submit` (SUBMITTED) → `void enqueueAttendanceDone(sessionId)`
+(hanya `queue.add`, ~20ms, tidak memblokir response) → BullMQ worker:
+job `attendance-done` (fan-out) → satu job `notify-user` per ortu ber-relasi `APPROVED`
+(jobId deterministik `notify_<sessionId>_<userId>` → dedupe) → buat baris `notifications`
+(idempoten: cek `payload.sessionId` lebih dulu) + kirim push ke tiap `device_tokens`.
+
+- **Retry**: BullMQ `attempts: 3`, backoff eksponensial (1s/2s/4s). Job push gagal → di-retry;
+  gagal permanen → tetap tersimpan (`removeOnFail: false` = dead-letter) + di-log (`@OnWorkerEvent('failed')`).
+- **PushSender**: `LoggingPushSender` (dev, default) / `FirebasePushSender` (bila `FCM_CREDENTIALS_PATH` valid).
+  Token ditolak permanen → dihapus dari `device_tokens`. `PUSH_FAIL_TOKENS` (csv) → simulasi gagal untuk uji.
+- Skema: migration `20260829063133_add_device_tokens` menambah tabel `device_tokens`
+  (tidak ada di DDL asli) + `down.sql`.
+
+| Path | Fungsi |
+|---|---|
+| `POST /notifications/devices` | `{ token, platform? }` — daftar/segarkan device token (upsert) |
+| `DELETE /notifications/devices` | `{ token }` — hapus token milik user |
+| `GET /notifications?page=&pageSize=&unreadOnly=` | Inbox user; `meta.unread` disertakan |
+| `GET /notifications/unread-count` | `{ unread }` |
+| `POST /notifications/read` `{ ids:[] }` / `POST /notifications/read-all` | Tandai dibaca → `{ updated, unread }` |
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -293,3 +316,12 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] `link-request` → PENDING; dedup 409; nama tak cocok 400; NIS tak ada 404 — **e2e**
 - [x] Admin approve → APPROVED + audit; RBAC lintas-role 403 — **e2e**
 - [x] E2E parent vs Postgres nyata: 24/24 assertion; 57 unit test hijau
+
+### Fase 1.5
+- [x] Submit presensi direspons cepat meski banyak ortu — **e2e: ~29ms** (< 800ms; hanya `queue.add`)
+- [x] Notifikasi terkirim ke SEMUA ortu APPROVED, tersimpan di `notifications` (type `ATTENDANCE_DONE`) — **e2e**
+- [x] Ortu tanpa device token tetap menerima notifikasi **in-app** — **e2e**
+- [x] Job gagal tidak memacetkan queue: retry 3× + dead-letter (`removeOnFail:false`) + log — **unit test**
+- [x] Idempoten: retry job tidak menduplikasi baris `notifications` — **unit test**
+- [x] Badge unread akurat & berkurang saat dibaca (`read` / `read-all`) — **e2e**
+- [x] E2E notifikasi vs Postgres+Redis nyata: 20/20 assertion; 63 unit test hijau

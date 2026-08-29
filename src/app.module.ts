@@ -3,6 +3,7 @@ import { ConfigModule } from '@nestjs/config';
 
 import configuration from './config/configuration.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { QueueModule } from './queue/queue.module.js';
 import { RedisModule } from './redis/redis.module.js';
 
 import { AppController } from './app.controller.js';
@@ -28,6 +29,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
     // Infrastruktur
     PrismaModule,
     RedisModule,
+    QueueModule,
 
     // Modul fitur (kerangka Fase 0)
     AuthModule,

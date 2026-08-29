@@ -9,6 +9,7 @@ import { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { formatTimeOfDay, parseTimeOfDay } from '../../common/util/time-of-day.js';
 import type { SubmitAttendanceDto } from './dto/submit-attendance.dto.js';
 
@@ -26,6 +27,7 @@ export class AttendanceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   /** GET /coach/today-sessions — jadwal ekskul hari ini milik pembina login. */
@@ -276,6 +278,9 @@ export class AttendanceService {
       ipAddress: actor.ip,
       metadata: { extracurricularId: dto.extracurricular_id, sessionDate: dto.session_date, summary },
     });
+
+    // Non-blocking: taruh job notifikasi ke queue (response submit tetap cepat).
+    void this.notifications.enqueueAttendanceDone(sessionId);
 
     return {
       session_id: sessionId,
