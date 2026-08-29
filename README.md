@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 2.2 selesai.** 0.1–1.5 (MVP) + 2.1 (offline sync — mobile) +
-> **2.2 Scan QR** (`/coach/students/qr-scan`, `/admin/students/:id/rotate-qr`).
+> **Status: Fase 2.3 selesai.** 0.1–1.5 (MVP) + 2.1 (offline sync — mobile) +
+> 2.2 Scan QR + **2.3** (submit: tolak `activeness_score` non-HADIR; `avgActiveness` di history).
 
 ## Struktur folder
 
@@ -178,7 +178,7 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 |---|---|
 | `GET /coach/today-sessions` | Jadwal ekskul hari ini (zona Asia/Jakarta) milik pembina login + status sesi bila sudah disubmit hari itu |
 | `GET /coach/extracurriculars/:id/roster` | Siswa aktif untuk presensi (403 bila bukan pembina ekskul tsb) |
-| `GET /coach/sessions?limit=` | Riwayat sesi pembina + ringkasan per status (GP-07) |
+| `GET /coach/sessions?limit=` | Riwayat sesi pembina + ringkasan per status + `avgActiveness` (rata-rata keaktifan HADIR, Fase 2.3) |
 | `POST /attendance/submit` | Satu request: presensi + materi. Kontrak dokumen desain **bagian 4.1** |
 | `POST /coach/students/qr-scan` | *(Fase 2.2)* `{ qr_token, extracurricular_id }` → `{ student }`. **404** `{error:'QR_INVALID'}` (token asing / sudah dirotasi), **422** `{error:'NOT_A_MEMBER'}`, **403** bukan pembina ekskul. Audit `QR_SCAN` |
 
@@ -187,7 +187,9 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 - **409** `{ error:'SESSION_ALREADY_SYNCED', message, existing_session_id }` — replay `client_generated_id`
   yang sama, **atau** sudah ada sesi untuk `(extracurricular_id, session_date, coach_id)` (idempotency + UNIQUE constraint)
 - **422** `{ error:'VALIDATION_ERROR', details:[{ field, message }] }` — status di luar enum,
-  siswa bukan anggota (`attendances[i].student_id`), tanggal masa depan, `schedule_id` tak cocok
+  siswa bukan anggota (`attendances[i].student_id`), tanggal masa depan, `schedule_id` tak cocok,
+  **`activeness_score` untuk siswa non-HADIR** (`attendances[i].activeness_score`, Fase 2.3).
+  `skill_notes` / `personal_notes` diperbolehkan untuk status apa pun.
 - **403** bila bukan pembina ekskul tsb
 - `Idempotency-Key` header diterima (opsional; sama dengan `client_generated_id`)
 - submit sukses → `audit_logs` action `SUBMIT_ATTENDANCE`
@@ -333,3 +335,8 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] `qr_token` yang sudah dirotasi **tidak bisa dipakai** untuk presensi (string lama tak cocok) — **e2e**
 - [x] Siswa bukan anggota ekskul → 422 `NOT_A_MEMBER`; bukan pembina ekskul → 403 — **e2e**
 - [x] E2E QR vs Postgres nyata: 10/10 assertion; 66 unit test hijau; audit `QR_SCAN` + `ROTATE_QR_TOKEN`
+
+### Fase 2.3 (backend)
+- [x] Submit **menolak `activeness_score` untuk siswa non-HADIR** → 422 `attendances[i].activeness_score` — **unit + e2e**
+- [x] `GET /coach/sessions` menyertakan `avgActiveness` per sesi — **e2e: (5+3)/2 = 4.0**
+- [x] 67 unit test hijau
