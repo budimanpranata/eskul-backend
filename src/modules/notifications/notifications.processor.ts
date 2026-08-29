@@ -2,17 +2,22 @@ import { InjectQueue, OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullm
 import { Inject, Logger } from '@nestjs/common';
 import type { Job } from 'bullmq';
 import { Queue } from 'bullmq';
+import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { NOTIFICATIONS_QUEUE } from '../../queue/queue.module.js';
 import { JOB_ATTENDANCE_DONE, JOB_NOTIFY_USER } from './notifications.service.js';
 import { PUSH_SENDER, type PushSender } from './push/push-sender.js';
 
-interface NotifyUserData {
+/** Payload job pengiriman ke satu user (generik untuk semua jenis notifikasi). */
+export interface NotifyUserData {
   userId: string;
-  sessionId: string;
+  type: string;
   title: string;
   body: string;
+  payload: Record<string, unknown>;
+  /** kunci idempotensi: retry job tidak membuat baris `notifications` ganda. */
+  dedupeKey: string;
 }
 
 const DAY_LABELS = ['', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
@@ -72,7 +77,14 @@ export class NotificationsProcessor extends WorkerHost {
     await this.queue.addBulk(
       userIds.map((userId) => ({
         name: JOB_NOTIFY_USER,
-        data: { userId, sessionId, title, body } satisfies NotifyUserData,
+        data: {
+          userId,
+          type: 'ATTENDANCE_DONE',
+          title,
+          body,
+          payload: { sessionId },
+          dedupeKey: `attn:${sessionId}`,
+        } satisfies NotifyUserData,
         opts: { jobId: `notify_${sessionId}_${userId}` },
       })),
     );
@@ -84,8 +96,8 @@ export class NotificationsProcessor extends WorkerHost {
     const existing = await this.prisma.notification.findFirst({
       where: {
         userId: data.userId,
-        type: 'ATTENDANCE_DONE',
-        payload: { path: ['sessionId'], equals: data.sessionId },
+        type: data.type,
+        payload: { path: ['_k'], equals: data.dedupeKey },
       },
       select: { id: true },
     });
@@ -95,10 +107,10 @@ export class NotificationsProcessor extends WorkerHost {
       (await this.prisma.notification.create({
         data: {
           userId: data.userId,
-          type: 'ATTENDANCE_DONE',
+          type: data.type,
           title: data.title,
           body: data.body,
-          payload: { sessionId: data.sessionId },
+          payload: { ...data.payload, _k: data.dedupeKey } as Prisma.InputJsonValue,
         },
         select: { id: true },
       }));
@@ -114,7 +126,13 @@ export class NotificationsProcessor extends WorkerHost {
         const res = await this.push.send(token, {
           title: data.title,
           body: data.body,
-          data: { type: 'ATTENDANCE_DONE', sessionId: data.sessionId, notificationId: notification.id },
+          data: {
+            type: data.type,
+            notificationId: notification.id,
+            ...Object.fromEntries(
+              Object.entries(data.payload).map(([k, v]) => [k, String(v)]),
+            ),
+          },
         });
         if (res.invalidToken) {
           await this.prisma.deviceToken.deleteMany({ where: { token } });

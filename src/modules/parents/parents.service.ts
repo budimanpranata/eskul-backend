@@ -9,6 +9,7 @@ import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 import { buildPageMeta, pageSkip, type PaginatedResult } from '../../common/dto/pagination.dto.js';
 import type {
   ApproveRelationDto,
@@ -23,11 +24,18 @@ interface Actor {
 
 type StatusCode = 'HADIR' | 'IZIN' | 'SAKIT' | 'ALPA';
 
+/** Jeda pengajuan ulang setelah relasi ditolak (DoD Fase 2.4). */
+const REJECT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** > ambang siswa berbeda per nomor HP dalam jendela waktu → tandai SUSPICIOUS. */
+const SUSPICIOUS_MAX_STUDENTS = 5;
+const SUSPICIOUS_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class ParentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   // ================= ORANG TUA =================
@@ -75,7 +83,7 @@ export class ParentsService {
 
     const existing = await this.prisma.parentStudentRelation.findUnique({
       where: { parentId_studentId: { parentId: parent.id, studentId: student.id } },
-      select: { id: true, approvalStatus: true },
+      select: { id: true, approvalStatus: true, approvedAt: true },
     });
 
     let relationId: string;
@@ -86,7 +94,15 @@ export class ParentsService {
       if (existing.approvalStatus === 'PENDING') {
         throw new ConflictException('Pengajuan untuk siswa ini masih menunggu persetujuan.');
       }
-      // REJECTED → boleh ajukan ulang (jeda/anti-spam dikerjakan di Fase 2.4).
+      // REJECTED → boleh ajukan ulang setelah jeda 24 jam sejak penolakan (DoD Fase 2.4).
+      if (existing.approvedAt && Date.now() - existing.approvedAt.getTime() < REJECT_COOLDOWN_MS) {
+        const hoursLeft = Math.ceil(
+          (REJECT_COOLDOWN_MS - (Date.now() - existing.approvedAt.getTime())) / 3_600_000,
+        );
+        throw new ConflictException(
+          `Pengajuan Anda sebelumnya ditolak. Coba lagi dalam ~${hoursLeft} jam.`,
+        );
+      }
       await this.prisma.parentStudentRelation.update({
         where: { id: existing.id },
         data: { approvalStatus: 'PENDING', approvedBy: null, approvedAt: null },
@@ -266,11 +282,27 @@ export class ParentsService {
       }),
     ]);
 
+    // Deteksi kecurigaan: satu nomor HP mengajukan relasi ke > 5 siswa berbeda / 24 jam.
+    const phones = [
+      ...new Set(rows.map((r) => r.parent.user.phoneNumber).filter((p): p is string => !!p)),
+    ];
+    const since = new Date(Date.now() - SUSPICIOUS_WINDOW_MS);
+    const suspiciousPhones = new Set<string>();
+    for (const phone of phones) {
+      const recent = await this.prisma.parentStudentRelation.findMany({
+        where: { createdAt: { gte: since }, parent: { user: { phoneNumber: phone } } },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      });
+      if (recent.length > SUSPICIOUS_MAX_STUDENTS) suspiciousPhones.add(phone);
+    }
+
     const data = rows.map((r) => ({
       id: r.id,
       approvalStatus: r.approvalStatus,
       createdAt: r.createdAt,
       approvedAt: r.approvedAt,
+      suspicious: !!r.parent.user.phoneNumber && suspiciousPhones.has(r.parent.user.phoneNumber),
       parent: {
         relationType: r.parent.relationType,
         fullName: r.parent.user.fullName,
@@ -299,7 +331,10 @@ export class ParentsService {
         approvedBy: actor.userId,
         approvedAt: new Date(),
       },
-      include: { student: { select: { id: true, fullName: true } } },
+      include: {
+        student: { select: { id: true, fullName: true } },
+        parent: { select: { userId: true } },
+      },
     });
 
     await this.audit.log({
@@ -311,7 +346,21 @@ export class ParentsService {
       metadata: { reason: dto.reason ?? null, studentId: updated.student.id },
     });
 
-    // TODO Fase 1.5 / 2.4: kirim notifikasi push ke orang tua (approved/rejected).
+    // Notifikasi push ke orang tua (via job queue Fase 1.5) — non-blocking & idempoten.
+    const approved = dto.decision === 'APPROVED';
+    void this.notifications.enqueueUserNotification({
+      userId: updated.parent.userId,
+      type: 'RELATION_DECISION',
+      title: approved ? 'Permintaan hubungan disetujui' : 'Permintaan hubungan ditolak',
+      body: approved
+        ? `Akun Anda kini terhubung dengan ${updated.student.fullName}.`
+        : `Permintaan hubungan dengan ${updated.student.fullName} ditolak.` +
+          (dto.reason ? ` Alasan: ${dto.reason}` : ''),
+      payload: { relationId, decision: dto.decision, studentId: updated.student.id },
+      jobId: `notify_rel_${relationId}_${dto.decision}`,
+      dedupeKey: `rel:${relationId}:${dto.decision}`,
+    });
+
     return {
       id: updated.id,
       approvalStatus: updated.approvalStatus,

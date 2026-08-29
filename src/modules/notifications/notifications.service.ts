@@ -90,4 +90,37 @@ export class NotificationsService {
       this.logger.error(`Gagal enqueue notifikasi untuk sesi ${sessionId}: ${(err as Error).message}`);
     }
   }
+
+  /**
+   * Kirim satu notifikasi ke satu user via queue (non-blocking).
+   * `jobId` & `dedupeKey` menjaga idempotensi (retry / pemanggilan ganda).
+   */
+  async enqueueUserNotification(params: {
+    userId: string;
+    type: string;
+    title: string;
+    body: string;
+    payload?: Record<string, unknown>;
+    jobId: string;
+    dedupeKey: string;
+  }): Promise<void> {
+    try {
+      await this.queue.add(
+        JOB_NOTIFY_USER,
+        {
+          userId: params.userId,
+          type: params.type,
+          title: params.title,
+          body: params.body,
+          payload: params.payload ?? {},
+          dedupeKey: params.dedupeKey,
+        },
+        { jobId: params.jobId },
+      );
+    } catch (err) {
+      this.logger.error(
+        `Gagal enqueue notifikasi (${params.type}) untuk user ${params.userId}: ${(err as Error).message}`,
+      );
+    }
+  }
 }

@@ -24,6 +24,8 @@ describe('ParentsService', () => {
       parentStudentRelation: {
         findFirst: vi.fn(),
         findUnique: vi.fn(),
+        findMany: vi.fn().mockResolvedValue([]),
+        count: vi.fn().mockResolvedValue(0),
         create: vi.fn(),
         update: vi.fn(),
       },
@@ -33,7 +35,12 @@ describe('ParentsService', () => {
       notification: { findFirst: vi.fn().mockResolvedValue(null) },
     };
     audit = { log: vi.fn().mockResolvedValue(undefined) };
-    service = new ParentsService(prisma as unknown as PrismaService, audit as unknown as AuditService);
+    const notifications = { enqueueUserNotification: vi.fn().mockResolvedValue(undefined) };
+    service = new ParentsService(
+      prisma as unknown as PrismaService,
+      audit as unknown as AuditService,
+      notifications as never,
+    );
   });
 
   describe('childProgress', () => {
@@ -106,6 +113,79 @@ describe('ParentsService', () => {
       expect(audit.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'PARENT_LINK_REQUEST', entityId: 'rel-1' }),
       );
+    });
+
+    it('REJECTED < 24 jam lalu → 409 dengan jeda; > 24 jam → boleh ajukan ulang', async () => {
+      prisma.student.findUnique.mockResolvedValue({ id: 's1', fullName: 'Budi Santoso', isActive: true });
+
+      // ditolak 2 jam lalu
+      prisma.parentStudentRelation.findUnique.mockResolvedValue({
+        id: 'rel-1',
+        approvalStatus: 'REJECTED',
+        approvedAt: new Date(Date.now() - 2 * 3600_000),
+      });
+      await expect(
+        service.linkRequest({ nis: 'N1', studentName: 'budi' } as any, { userId: 'u1', ip: null }),
+      ).rejects.toThrowError(/jam/);
+      expect(prisma.parentStudentRelation.update).not.toHaveBeenCalled();
+
+      // ditolak 30 jam lalu → boleh
+      prisma.parentStudentRelation.findUnique.mockResolvedValue({
+        id: 'rel-1',
+        approvalStatus: 'REJECTED',
+        approvedAt: new Date(Date.now() - 30 * 3600_000),
+      });
+      prisma.parentStudentRelation.update.mockResolvedValue({});
+      const res = await service.linkRequest(
+        { nis: 'N1', studentName: 'budi' } as any,
+        { userId: 'u1', ip: null },
+      );
+      expect(res.status).toBe('PENDING');
+    });
+  });
+
+  describe('listRelations — badge SUSPICIOUS', () => {
+    it('nomor HP dgn > 5 siswa berbeda / 24 jam → suspicious=true', async () => {
+      prisma.$transaction = vi.fn().mockResolvedValue([
+        1,
+        [
+          {
+            id: 'r1',
+            approvalStatus: 'PENDING',
+            createdAt: new Date(),
+            approvedAt: null,
+            parent: { relationType: 'IBU', user: { fullName: 'A', email: null, phoneNumber: '0811' } },
+            student: { id: 's1', nis: 'N', fullName: 'X', classGrade: '4A' },
+          },
+        ],
+      ]);
+      // 6 siswa berbeda untuk nomor 0811 dalam 24 jam
+      prisma.parentStudentRelation.findMany.mockResolvedValue(
+        Array.from({ length: 6 }, (_, i) => ({ studentId: `s${i}` })),
+      );
+
+      const res = await service.listRelations('PENDING', 1, 20);
+      expect((res.data as any[])[0].suspicious).toBe(true);
+    });
+
+    it('nomor HP dgn <= 5 siswa → suspicious=false', async () => {
+      prisma.$transaction = vi.fn().mockResolvedValue([
+        1,
+        [
+          {
+            id: 'r1',
+            approvalStatus: 'PENDING',
+            createdAt: new Date(),
+            approvedAt: null,
+            parent: { relationType: 'IBU', user: { fullName: 'A', email: null, phoneNumber: '0899' } },
+            student: { id: 's1', nis: 'N', fullName: 'X', classGrade: '4A' },
+          },
+        ],
+      ]);
+      prisma.parentStudentRelation.findMany.mockResolvedValue([{ studentId: 's1' }, { studentId: 's2' }]);
+
+      const res = await service.listRelations('PENDING', 1, 20);
+      expect((res.data as any[])[0].suspicious).toBe(false);
     });
   });
 });

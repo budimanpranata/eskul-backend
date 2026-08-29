@@ -70,15 +70,25 @@ describe('NotificationsProcessor', () => {
   });
 
   describe('deliver', () => {
-    const data = { userId: 'u1', sessionId: 'sess-1', title: 'T', body: 'B' };
+    const data = {
+      userId: 'u1',
+      type: 'ATTENDANCE_DONE',
+      title: 'T',
+      body: 'B',
+      payload: { sessionId: 'sess-1' },
+      dedupeKey: 'attn:sess-1',
+    };
 
-    it('membuat baris notifications bila belum ada', async () => {
+    it('membuat baris notifications bila belum ada (payload + kunci idempotensi _k)', async () => {
       prisma.notification.findFirst.mockResolvedValue(null);
       prisma.notification.create.mockResolvedValue({ id: 'n1' });
       await proc.process(job(JOB_NOTIFY_USER, data));
       expect(prisma.notification.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ type: 'ATTENDANCE_DONE', payload: { sessionId: 'sess-1' } }),
+          data: expect.objectContaining({
+            type: 'ATTENDANCE_DONE',
+            payload: { sessionId: 'sess-1', _k: 'attn:sess-1' },
+          }),
         }),
       );
     });
