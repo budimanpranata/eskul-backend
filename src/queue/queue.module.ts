@@ -4,6 +4,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 
 export const NOTIFICATIONS_QUEUE = 'notifications';
 export const REPORTS_QUEUE = 'reports';
+export const PERIODIC_QUEUE = 'periodic-reports';
 
 /**
  * Infrastruktur job queue (BullMQ di atas Redis).

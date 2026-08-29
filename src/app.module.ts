@@ -19,6 +19,7 @@ import { AttendanceModule } from './modules/attendance/attendance.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
+import { PeriodicReportsModule } from './modules/periodic-reports/periodic-reports.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 
 @Module({
@@ -43,6 +44,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
     NotificationsModule,
     ReportsModule,
     AnalyticsModule,
+    PeriodicReportsModule,
     AuditModule,
   ],
   controllers: [AppController],

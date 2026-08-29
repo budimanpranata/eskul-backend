@@ -7,10 +7,10 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 3.2 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
+> **Status: Fase 3.3 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
 > 2.3 nilai keaktifan + 2.4 Approval Relasi Ortu + 3.1 Export Laporan PDF/Excel +
-> **3.2 Dashboard Analitik** (`GET /admin/analytics/overview`, cache Redis TTL 1 jam;
-> tren keaktifan ortu diagregasi per minggu/bulan).
+> 3.2 Dashboard Analitik + **3.3 Laporan Berkala Otomatis** (cron `@nestjs/schedule`
+> → fan-out + batch BullMQ → notifikasi `WEEKLY_REPORT` / `MONTHLY_REPORT`, idempoten).
 
 ## Struktur folder
 
@@ -47,7 +47,11 @@ backend/
 │   │   │   ├── render/          # attendance-dataset (agregasi) + pdf-renderer (pdfkit) + xlsx-renderer (exceljs)
 │   │   │   ├── storage/         # ReportStorage (interface) + LocalDiskReportStorage + factory
 │   │   │   └── report-signer.ts # HMAC-SHA256 + expires untuk URL unduhan
-│   │   └── analytics/       # ✅ GET /admin/analytics/overview — agregat + cache Redis TTL 1 jam  (Fase 3.2)
+│   │   ├── analytics/       # ✅ GET /admin/analytics/overview — agregat + cache Redis TTL 1 jam  (Fase 3.2)
+│   │   └── periodic-reports/# ✅ cron mingguan/bulanan → fan-out + batch → notifikasi ortu  (Fase 3.3)
+│   │       ├── period.ts        # window & key mingguan/bulanan + classifyTrend (pure)
+│   │       ├── *.service.ts     # @Cron + run-guard Redis + enqueue fan-out
+│   │       └── *.processor.ts   # fan-out → batch ber-delay → enqueueUserNotification per wali
 │   ├── app.module.ts
 │   └── main.ts             # global prefix /api/v1, helmet, CORS, ValidationPipe
 ├── Dockerfile
@@ -294,6 +298,36 @@ kini **diagregasi** sesuai `?period=weekly|monthly` (helper `bucketActivenessTre
 `{ bucket, label, avg_score, sessions }`, terurut kronologis, hanya baris `HADIR` ber-skor.
 Aman untuk data minim (1 titik pun tetap 1 entri).
 
+## Laporan Berkala Otomatis (Fase 3.3)
+
+`@nestjs/schedule` `@Cron` (zona **Asia/Jakarta**):
+
+| Jadwal | Cron | Isi |
+|---|---|---|
+| Mingguan | `0 18 * * 0` (Minggu 18:00) | Ringkasan Senin–Minggu berjalan per siswa: jumlah sesi, %hadir, rata-rata keaktifan → notifikasi `WEEKLY_REPORT` |
+| Bulanan | `0 6 1 * *` (tgl 1, 06:00) | Ringkasan bulan kalender lalu + **tren** vs bulan sebelumnya (`naik`/`turun`/`stabil`, ambang ±5 poin) → `MONTHLY_REPORT` |
+
+Alur: `@Cron` → `PeriodicReportsService.dispatch` (**run-guard**: `SET periodic:lock:<key> NX EX 6h`
+→ satu periode dijadwalkan sekali) → job `periodic-fanout` di queue `periodic-reports`
+→ worker mengumpulkan siswa ber-wali `APPROVED`, memecah ke **batch 200** dengan
+**jeda progresif 750 ms** (`delay: i*750`) → tiap `periodic-batch` menghitung ringkasan per
+siswa lalu `NotificationsService.enqueueUserNotification` satu per wali `APPROVED`.
+
+**Idempotensi berlapis** (retry / cron dobel tidak mengirim notifikasi ganda):
+- run-guard Redis per periode;
+- `jobId` fan-out & batch deterministik (`periodic_fanout_<key>` / `periodic_batch_<key>_<i>`);
+- `dedupeKey` `wr:<key>:<studentId>` / `mr:<key>:<studentId>` → worker `notify-user` cek
+  `payload._k` sebelum membuat baris `notifications`.
+- Pemicu manual `force:true` memakai `jobId` ber-suffix `runId` agar **bisa** dijalankan
+  ulang; `dedupeKey` tetap mencegah baris ganda.
+
+**Pemicu manual (ops / uji):** `POST /admin/periodic-reports/run` `{ type:'weekly'|'monthly', force? }`
+(`@Roles('ADMIN')`, audit `RUN_PERIODIC_REPORT`).
+
+**Skala:** cron hanya *memicu*; kerja berat ada di worker + dibatch. Uji 2.000 siswa →
+respons `/run` 6 ms, `/auth/me` p95 **10 ms** selama worker jalan, 2.000 notifikasi terkirim,
+re-run `force` → tetap 2.000 (nol duplikat).
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -419,3 +453,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] `lowAttendanceByExtracurricular` top-5 urut % menaik + diperkaya nama siswa — **unit + e2e**
 - [x] Tren keaktifan ortu diagregasi per minggu/bulan (`bucketActivenessTrend`), akurat saat data minim 1 titik — **unit + e2e**
 - [x] E2E analitik vs Postgres+Redis nyata: 25/25 assertion; **106 unit test** hijau (+11 dari 3.2)
+
+### Fase 3.3 (backend)
+- [x] Job berjalan otomatis sesuai jadwal tanpa intervensi — `@Cron` Minggu 18:00 / tgl 1 06:00 (Asia/Jakarta); logika periode & tren **teruji unit dengan `now` mock** (`period.spec.ts`)
+- [x] Retry / cron dobel **tidak** mengirim notifikasi dobel — run-guard Redis + `jobId` deterministik + `dedupeKey` per (periode, siswa); e2e: re-run `force` → jumlah notifikasi tetap
+- [x] Beban server stabil untuk skala besar — cron hanya memicu; fan-out → batch 200 + jeda 750 ms; **uji 2.000 siswa: `/auth/me` p95 10 ms selama worker jalan**, 2.000 notifikasi, nol duplikat
+- [x] Ringkasan bulanan menyertakan tren vs bulan sebelumnya (`naik`/`turun`/`stabil`) — **unit + e2e (100% vs 50% → naik)**
+- [x] Pemicu manual `POST /admin/periodic-reports/run` (`@Roles('ADMIN')`, audit `RUN_PERIODIC_REPORT`)
+- [x] E2E berkala vs Postgres+Redis nyata: 15/15 assertion; **123 unit test** hijau (+17 dari 3.3); dep baru `@nestjs/schedule@12`
