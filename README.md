@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 1.5 selesai.** 0.1–1.4 + **1.5 Notifikasi Push** (BullMQ queue,
-> `notifications` module, migration `device_tokens`).
+> **Status: Fase 2.2 selesai.** 0.1–1.5 (MVP) + 2.1 (offline sync — mobile) +
+> **2.2 Scan QR** (`/coach/students/qr-scan`, `/admin/students/:id/rotate-qr`).
 
 ## Struktur folder
 
@@ -160,6 +160,7 @@ Listing memakai query `page`, `pageSize` (≤100), `search`, dan filter spesifik
 | Path | Operasi |
 |---|---|
 | `GET/POST /admin/students`, `GET/PUT/DELETE /admin/students/:id`, `POST /admin/students/:id/reactivate` | CRUD siswa. `POST` auto-generate `qr_token` acak (bukan turunan NIS). `DELETE` = soft-delete (`is_active=false`), baris & histori presensi tetap utuh. Filter: `classGrade`, `isActive`. |
+| `POST /admin/students/:id/rotate-qr` | *(Fase 2.2)* `qr_token` acak baru + `qr_token_rotated_at`; token lama langsung tidak berlaku. Audit `ROTATE_QR_TOKEN`. |
 | `POST /admin/students/import` (multipart `file`) | Import massal `.xlsx` (header: `nis`,`nama`,`kelas`, opsional `gender`,`tanggal_lahir`). Satu `createMany`; return `{ created, skipped, errors[] }`. |
 | `GET/POST /admin/coaches`, `GET/PUT/DELETE /admin/coaches/:id`, `.../reactivate` | CRUD pembina. `POST` membuat akun `users` role PEMBINA (+password argon2id) & `coaches` dalam satu transaksi. `DELETE` = nonaktifkan `users` (tabel `coaches` tak punya `is_active`). |
 | `GET/POST /admin/extracurriculars`, `GET/PUT/DELETE /admin/extracurriculars/:id`, `.../reactivate` | CRUD ekskul. Filter: `category`, `isActive`. |
@@ -179,6 +180,7 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 | `GET /coach/extracurriculars/:id/roster` | Siswa aktif untuk presensi (403 bila bukan pembina ekskul tsb) |
 | `GET /coach/sessions?limit=` | Riwayat sesi pembina + ringkasan per status (GP-07) |
 | `POST /attendance/submit` | Satu request: presensi + materi. Kontrak dokumen desain **bagian 4.1** |
+| `POST /coach/students/qr-scan` | *(Fase 2.2)* `{ qr_token, extracurricular_id }` → `{ student }`. **404** `{error:'QR_INVALID'}` (token asing / sudah dirotasi), **422** `{error:'NOT_A_MEMBER'}`, **403** bukan pembina ekskul. Audit `QR_SCAN` |
 
 `POST /attendance/submit`:
 - **201** `{ session_id, status:'SUBMITTED', synced_at, summary:{ total_students, hadir, izin, sakit, alpa } }`
@@ -325,3 +327,9 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Idempoten: retry job tidak menduplikasi baris `notifications` — **unit test**
 - [x] Badge unread akurat & berkurang saat dibaca (`read` / `read-all`) — **e2e**
 - [x] E2E notifikasi vs Postgres+Redis nyata: 20/20 assertion; 63 unit test hijau
+
+### Fase 2.2 (backend)
+- [x] Scan `qr_token` valid → student (untuk mobile set HADIR); token asing / nonaktif → 404 `QR_INVALID` — **e2e**
+- [x] `qr_token` yang sudah dirotasi **tidak bisa dipakai** untuk presensi (string lama tak cocok) — **e2e**
+- [x] Siswa bukan anggota ekskul → 422 `NOT_A_MEMBER`; bukan pembina ekskul → 403 — **e2e**
+- [x] E2E QR vs Postgres nyata: 10/10 assertion; 66 unit test hijau; audit `QR_SCAN` + `ROTATE_QR_TOKEN`
