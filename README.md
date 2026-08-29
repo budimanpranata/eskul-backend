@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 1.1 selesai.** Scaffolding (0.1) + skema DB (0.2) + **Autentikasi & RBAC** (1.1).
-> Modul fitur lain masih kerangka.
+> **Status: Fase 1.2 selesai.** Scaffolding (0.1) + skema DB (0.2) + Auth & RBAC (1.1)
+> + **CRUD Data Master** students/coaches/extracurriculars (1.2). Modul lain masih kerangka.
 
 ## Struktur folder
 
@@ -34,10 +34,10 @@ backend/
 │   │   ├── auth/            # ✅ login/refresh/logout/me + TokenService (JWT+Redis)  (Fase 1.1)
 │   │   ├── audit/           # ✅ AuditService.log() → audit_logs (global)            (Fase 1.1)
 │   │   ├── users/           # akun users lintas-role
-│   │   ├── students/        # data master siswa + qr_token  (Fase 1.2 / 2.2)
-│   │   ├── coaches/         # data master guru pembina      (Fase 1.2)
+│   │   ├── students/        # ✅ CRUD + soft-delete + qr_token + import Excel        (Fase 1.2)
+│   │   ├── coaches/         # ✅ CRUD (buat user PEMBINA) + soft-delete              (Fase 1.2)
+│   │   ├── extracurriculars/# ✅ CRUD + jadwal (anti-bentrok) + anggota (kapasitas)  (Fase 1.2)
 │   │   ├── parents/         # relasi ortu-siswa, dashboard  (Fase 1.4 / 2.4)
-│   │   ├── extracurriculars/# ekskul, jadwal, keanggotaan   (Fase 1.2)
 │   │   ├── attendance/      # sesi presensi + materi        (Fase 1.3 / 2.x)
 │   │   ├── notifications/   # push FCM via job queue        (Fase 1.5)
 │   │   └── reports/         # export PDF/Excel async        (Fase 3.1)
@@ -152,6 +152,23 @@ Dua guard **global** (terdaftar di `AuthModule` via `APP_GUARD`, urutan: auth �
 
 Helper di `src/common/`: `@Public()`, `@Roles(...)`, `@CurrentUser()`, tipe `AuthenticatedUser` / `RoleCode`.
 
+## Data Master admin (Fase 1.2)
+
+Semua di bawah `/api/v1/admin/*`, wajib JWT role **ADMIN** (`@Roles('ADMIN')`).
+Listing memakai query `page`, `pageSize` (≤100), `search`, dan filter spesifik.
+
+| Path | Operasi |
+|---|---|
+| `GET/POST /admin/students`, `GET/PUT/DELETE /admin/students/:id`, `POST /admin/students/:id/reactivate` | CRUD siswa. `POST` auto-generate `qr_token` acak (bukan turunan NIS). `DELETE` = soft-delete (`is_active=false`), baris & histori presensi tetap utuh. Filter: `classGrade`, `isActive`. |
+| `POST /admin/students/import` (multipart `file`) | Import massal `.xlsx` (header: `nis`,`nama`,`kelas`, opsional `gender`,`tanggal_lahir`). Satu `createMany`; return `{ created, skipped, errors[] }`. |
+| `GET/POST /admin/coaches`, `GET/PUT/DELETE /admin/coaches/:id`, `.../reactivate` | CRUD pembina. `POST` membuat akun `users` role PEMBINA (+password argon2id) & `coaches` dalam satu transaksi. `DELETE` = nonaktifkan `users` (tabel `coaches` tak punya `is_active`). |
+| `GET/POST /admin/extracurriculars`, `GET/PUT/DELETE /admin/extracurriculars/:id`, `.../reactivate` | CRUD ekskul. Filter: `category`, `isActive`. |
+| `POST/PUT/DELETE /admin/extracurriculars/:id/schedules[/:sid]` | Jadwal ekskul. Validasi: jam selesai > mulai; **tolak bentrok** jam di lokasi sama (lintas ekskul). `DELETE` = soft (`is_active=false`). |
+| `GET/POST /admin/extracurriculars/:id/members`, `DELETE .../members/:studentId` | Keanggotaan. `POST { studentIds:[] }` — validasi siswa aktif, cek `max_capacity`, skip duplikat. |
+
+Setiap `create/update/delete` menulis `audit_logs` (action `CREATE_STUDENT`, `IMPORT_STUDENTS`,
+`DEACTIVATE_COACH`, `CREATE_SCHEDULE`, `ENROLL_MEMBERS`, …) dengan `entity_type` & `entity_id` yang benar.
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -208,3 +225,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Refresh token yang di-revoke (rotasi & logout) → 401 — **e2e verified via Redis**
 - [x] Coverage modul auth ≥ 80% — **stmts 98.9% / lines 100% / guards 100%** (`npm run test:cov`)
 - [x] E2E smoke (login/me/refresh/logout terhadap Postgres+Redis nyata): 17/17 assertion — **verified**
+
+### Fase 1.2
+- [x] Import Excel massal siswa ≥ 100 baris tanpa timeout — **e2e: 120 baris ~65ms** (satu `createMany`)
+- [x] Nonaktifkan siswa/pembina tidak menghapus data — **e2e: baris tetap ada, `is_active=false`**
+- [x] Validasi cegah data ganda (NIS duplikat, jadwal bentrok jam di lokasi sama) — **e2e: 409**
+- [x] Semua aksi CRUD tercatat di `audit_logs` dengan `entity_type` & `entity_id` benar — **verified via psql**
+- [x] Seluruh endpoint `/admin/*` menolak non-ADMIN (403) & tanpa token (401) — **e2e verified**
+- [x] E2E data-master vs Postgres nyata: 33/33 assertion; 42 unit test hijau
