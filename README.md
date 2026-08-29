@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 2.3 selesai.** 0.1–1.5 (MVP) + 2.1 (offline sync — mobile) +
-> 2.2 Scan QR + **2.3** (submit: tolak `activeness_score` non-HADIR; `avgActiveness` di history).
+> **Status: Fase 2.4 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
+> 2.3 nilai keaktifan + **2.4 Approval Relasi Ortu** (notif push, cooldown 24 jam, badge SUSPICIOUS).
 
 ## Struktur folder
 
@@ -204,10 +204,10 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 |---|---|---|
 | `POST /auth/register` | publik | Pendaftaran mandiri ORANGTUA (`consent:true` wajib) → users+parents + token; audit `PARENT_CONSENT_GIVEN` |
 | `GET /parent/children` | ORANGTUA | Anak dengan relasi `APPROVED` |
-| `POST /parent/link-request` | ORANGTUA | Ajukan relasi via `{ nis, studentName }` (verifikasi silang nama) → status `PENDING` |
+| `POST /parent/link-request` | ORANGTUA | Ajukan relasi via `{ nis, studentName }` (verifikasi silang nama) → `PENDING`. Relasi yang **REJECTED tak bisa diajukan ulang < 24 jam** → 409 (Fase 2.4) |
 | `GET /parent/child-progress/:studentId` | ORANGTUA | **Kontrak §4.2**. Wajib relasi `APPROVED`, jika tidak → **403** `{ error:'UNAUTHORIZED_RELATION' }` |
-| `GET /admin/parent-relations?status=` | ADMIN | Daftar relasi (default `PENDING`) + info ortu & siswa |
-| `PUT /admin/parent-relations/:id/approve` | ADMIN | `{ decision:'APPROVED'\|'REJECTED', reason? }` → set `approved_by`/`approved_at` + audit |
+| `GET /admin/parent-relations?status=` | ADMIN | Daftar relasi (default `PENDING`) + info ortu & siswa + **`suspicious`** (Fase 2.4: nomor HP dgn > 5 siswa berbeda / 24 jam) |
+| `PUT /admin/parent-relations/:id/approve` | ADMIN | `{ decision:'APPROVED'\|'REJECTED', reason? }` → set `approved_by`/`approved_at` + audit `APPROVE`/`REJECT_PARENT_RELATION` + **notif push `RELATION_DECISION`** ke ortu via queue (Fase 2.4) |
 
 `child-progress` payload (snake_case, sesuai kontrak): `student{full_name,class_grade,photo_url}`,
 `extracurriculars[]{ id, name, attendance_summary{total_sessions,hadir,izin,sakit,alpa,percentage},
@@ -215,7 +215,9 @@ activeness_trend[{date,score}], materials_timeline[{date,description,coach_name,
 `latest_notification`. Query: `period` (weekly=90h / monthly=180h), `from`/`to`, `extracurricularId`.
 Ekskul tanpa sesi tetap muncul (`total_sessions:0`). Akses → audit `VIEW_STUDENT_DATA`.
 
-> Notifikasi push saat approve/reject & anti-spam pengajuan ulang → Fase 1.5 / 2.4.
+Notifikasi generik ke satu user memakai job `notify-user` yang digeneralkan
+(`type`/`title`/`body`/`payload`/`dedupeKey`) via `NotificationsService.enqueueUserNotification()`;
+idempotensi lewat `payload._k = dedupeKey` (Fase 2.4).
 
 ## Notifikasi Push (Fase 1.5)
 
@@ -340,3 +342,10 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Submit **menolak `activeness_score` untuk siswa non-HADIR** → 422 `attendances[i].activeness_score` — **unit + e2e**
 - [x] `GET /coach/sessions` menyertakan `avgActiveness` per sesi — **e2e: (5+3)/2 = 4.0**
 - [x] 67 unit test hijau
+
+### Fase 2.4 (backend)
+- [x] Approve/Reject → `audit_logs` dengan admin yang bertanggung jawab (`approved_by`) — **e2e**
+- [x] Ortu yang di-reject tidak bisa mengajukan ulang < 24 jam → 409 dengan sisa jam — **unit + e2e**
+- [x] Badge `suspicious` benar: > 5 siswa berbeda / 1 nomor HP / 24 jam → true; 1 pengajuan → false — **unit + e2e**
+- [x] Notifikasi push `RELATION_DECISION` (approved/rejected + alasan) terkirim via queue — **e2e (poll `/notifications`)**
+- [x] E2E relasi vs Postgres+Redis nyata: 9/9 assertion; 70 unit test hijau
