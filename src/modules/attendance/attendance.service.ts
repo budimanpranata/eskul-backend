@@ -181,19 +181,25 @@ export class AttendanceService {
       where: { coachId: coach.id },
       include: {
         extracurricular: { select: { name: true } },
-        details: { select: { status: true } },
+        details: { select: { status: true, activenessScore: true } },
       },
       orderBy: [{ sessionDate: 'desc' }, { createdAt: 'desc' }],
       take: limit,
     });
-    return rows.map((r) => ({
-      id: r.id,
-      extracurricularName: r.extracurricular.name,
-      sessionDate: r.sessionDate,
-      status: r.status,
-      submittedAt: r.submittedAt,
-      summary: summarize(r.details.map((d) => d.status as StatusCode)),
-    }));
+    return rows.map((r) => {
+      const scores = r.details.map((d) => d.activenessScore).filter((s): s is number => s != null);
+      return {
+        id: r.id,
+        extracurricularName: r.extracurricular.name,
+        sessionDate: r.sessionDate,
+        status: r.status,
+        submittedAt: r.submittedAt,
+        summary: summarize(r.details.map((d) => d.status as StatusCode)),
+        avgActiveness: scores.length
+          ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10
+          : null,
+      };
+    });
   }
 
   /** POST /attendance/submit — presensi + materi, idempoten (dokumen desain 4.1). */
@@ -266,6 +272,13 @@ export class AttendanceService {
         });
       } else if (memberSet.get(a.student_id) === false) {
         details.push({ field: `attendances[${i}].student_id`, message: 'Siswa berstatus nonaktif.' });
+      }
+      // Nilai keaktifan hanya relevan untuk siswa HADIR (Fase 2.3).
+      if (a.status !== 'HADIR' && a.activeness_score != null) {
+        details.push({
+          field: `attendances[${i}].activeness_score`,
+          message: 'Nilai keaktifan hanya boleh diisi untuk siswa berstatus HADIR.',
+        });
       }
     });
     if (details.length) {

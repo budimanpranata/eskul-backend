@@ -132,6 +132,25 @@ describe('AttendanceService.submit', () => {
     }
   });
 
+  it('activeness_score untuk siswa non-HADIR → 422 field attendances[i].activeness_score', async () => {
+    const dto = {
+      ...baseDto,
+      attendances: [{ student_id: baseDto.attendances[0].student_id, status: 'IZIN', activeness_score: 4 }],
+    };
+    try {
+      await service.submit(dto as any, { userId: 'u1', ip: null });
+      throw new Error('seharusnya throw');
+    } catch (e: any) {
+      expect(e).toBeInstanceOf(UnprocessableEntityException);
+      expect(e.getResponse().details).toEqual([
+        {
+          field: 'attendances[0].activeness_score',
+          message: expect.stringContaining('HADIR'),
+        },
+      ]);
+    }
+  });
+
   describe('resolveQrScan', () => {
     const EK = baseDto.extracurricular_id;
 
