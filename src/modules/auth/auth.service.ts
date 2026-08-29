@@ -1,10 +1,11 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Injectable, UnauthorizedException } from '@nestjs/common';
 import * as argon2 from 'argon2';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { RoleCode } from '../../common/types/authenticated-user.js';
 import type { LoginDto } from './dto/login.dto.js';
+import type { RegisterParentDto } from './dto/register-parent.dto.js';
 import { TokenService } from './token.service.js';
 
 /** Pesan generik — tidak membocorkan apakah identifier atau password yang salah. */
@@ -145,6 +146,58 @@ export class AuthService {
       metadata: { revokedSessions: revoked },
     });
     return { revokedSessions: revoked };
+  }
+
+  /** Pendaftaran mandiri akun Orang Tua + login langsung. */
+  async registerParent(dto: RegisterParentDto, ip: string | null): Promise<AuthResult> {
+    const clash = await this.prisma.user.findFirst({
+      where: { OR: [{ email: dto.email }, ...(dto.phoneNumber ? [{ phoneNumber: dto.phoneNumber }] : [])] },
+      select: { id: true },
+    });
+    if (clash) throw new ConflictException('Email atau nomor HP sudah terdaftar.');
+
+    const orangtuaRole = await this.prisma.role.findUniqueOrThrow({ where: { code: 'ORANGTUA' } });
+    const passwordHash = await argon2.hash(dto.password, { type: argon2.argon2id });
+
+    const user = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.create({
+        data: {
+          roleId: orangtuaRole.id,
+          fullName: dto.fullName,
+          email: dto.email,
+          phoneNumber: dto.phoneNumber ?? null,
+          passwordHash,
+        },
+      });
+      await tx.parent.create({ data: { userId: u.id, relationType: dto.relationType } });
+      return u;
+    });
+
+    // Consent dicatat eksplisit dengan timestamp (dokumen desain bagian 7.2).
+    await this.audit.log({
+      userId: user.id,
+      action: 'PARENT_CONSENT_GIVEN',
+      entityType: 'user',
+      entityId: user.id,
+      ipAddress: ip,
+      metadata: { relationType: dto.relationType, consentAt: new Date().toISOString() },
+    });
+    await this.audit.log({
+      userId: user.id,
+      action: 'REGISTER_PARENT',
+      entityType: 'user',
+      entityId: user.id,
+      ipAddress: ip,
+    });
+
+    const issued = await this.tokens.issueTokens(user.id, 'ORANGTUA');
+    return {
+      accessToken: issued.accessToken,
+      refreshToken: issued.refreshToken,
+      tokenType: 'Bearer',
+      expiresIn: issued.expiresInSeconds,
+      user: { id: user.id, fullName: user.fullName, role: 'ORANGTUA' },
+    };
   }
 
   async getProfile(userId: string) {

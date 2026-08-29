@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../../common/types/authenticated-user.js
 import { AuthService } from './auth.service.js';
 import { LoginDto } from './dto/login.dto.js';
 import { RefreshDto } from './dto/refresh.dto.js';
+import { RegisterParentDto } from './dto/register-parent.dto.js';
 
 /**
  * Autentikasi — dokumen desain bagian 4.3.
@@ -30,6 +31,14 @@ export class AuthController {
   @HttpCode(200)
   refresh(@Body() dto: RefreshDto, @Ip() ip: string) {
     return this.authService.refresh(dto.refreshToken, ip ?? null);
+  }
+
+  /** Pendaftaran mandiri Orang Tua (dokumen desain 5.2). */
+  @Public()
+  @Post('register')
+  @HttpCode(201)
+  register(@Body() dto: RegisterParentDto, @Ip() ip: string) {
+    return this.authService.registerParent(dto, ip ?? null);
   }
 
   @Post('logout')

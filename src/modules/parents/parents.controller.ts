@@ -1,11 +1,38 @@
-import { Controller } from '@nestjs/common';
+import { Body, Controller, Get, Ip, Param, ParseUUIDPipe, Post, Query } from '@nestjs/common';
+
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import { Roles } from '../../common/decorators/roles.decorator.js';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import { ChildProgressQueryDto, LinkRequestDto } from './dto/parent.dto.js';
 import { ParentsService } from './parents.service.js';
 
-/**
- * Relasi ortu-siswa, link-request, dashboard child-progress. Fase 1.4 / 2.4.
- * FASE 0: kerangka controller — route ditambahkan pada fase terkait.
- */
+/** Aplikasi Orang Tua (dokumen desain bagian 4.2 & 4.3). */
+@Roles('ORANGTUA')
 @Controller('parent')
 export class ParentsController {
-  constructor(private readonly parentsService: ParentsService) {}
+  constructor(private readonly parents: ParentsService) {}
+
+  @Get('children')
+  children(@CurrentUser() user: AuthenticatedUser) {
+    return this.parents.children(user.id);
+  }
+
+  @Post('link-request')
+  linkRequest(
+    @Body() dto: LinkRequestDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.parents.linkRequest(dto, { userId: user.id, ip: ip ?? null });
+  }
+
+  @Get('child-progress/:studentId')
+  childProgress(
+    @Param('studentId', ParseUUIDPipe) studentId: string,
+    @Query() query: ChildProgressQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.parents.childProgress(studentId, query, { userId: user.id, ip: ip ?? null });
+  }
 }
