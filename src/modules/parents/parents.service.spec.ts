@@ -1,7 +1,7 @@
 import { ForbiddenException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ParentsService, shiftDays } from './parents.service.js';
+import { ParentsService, bucketActivenessTrend, shiftDays } from './parents.service.js';
 import type { AuditService } from '../audit/audit.service.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
 
@@ -10,6 +10,57 @@ describe('shiftDays', () => {
     expect(shiftDays('2026-08-29', -90)).toBe('2026-05-31');
     expect(shiftDays('2026-08-29', 1)).toBe('2026-08-30');
     expect(shiftDays('2026-01-01', -1)).toBe('2025-12-31');
+  });
+});
+
+describe('bucketActivenessTrend', () => {
+  const row = (date: string, status: string, score: number | null) => ({
+    sessionDate: new Date(`${date}T00:00:00.000Z`),
+    status,
+    score,
+  });
+
+  it('weekly: rata-rata skor per minggu (Senin), terurut kronologis', () => {
+    const out = bucketActivenessTrend(
+      [
+        row('2026-08-04', 'HADIR', 5), // Sel, minggu Senin 2026-08-03
+        row('2026-08-06', 'HADIR', 3), // Kam, minggu sama
+        row('2026-08-11', 'HADIR', 4), // minggu Senin 2026-08-10
+      ],
+      'weekly',
+    );
+    expect(out).toHaveLength(2);
+    expect(out[0]).toMatchObject({ bucket: '2026-08-03', avg_score: 4, sessions: 2 });
+    expect(out[1]).toMatchObject({ bucket: '2026-08-10', avg_score: 4, sessions: 1 });
+  });
+
+  it('monthly: rata-rata skor per bulan', () => {
+    const out = bucketActivenessTrend(
+      [row('2026-07-20', 'HADIR', 2), row('2026-08-02', 'HADIR', 4), row('2026-08-30', 'HADIR', 2)],
+      'monthly',
+    );
+    expect(out).toEqual([
+      { bucket: '2026-07', label: 'Jul 2026', avg_score: 2, sessions: 1 },
+      { bucket: '2026-08', label: 'Agu 2026', avg_score: 3, sessions: 2 },
+    ]);
+  });
+
+  it('abaikan baris non-HADIR dan skor null', () => {
+    const out = bucketActivenessTrend(
+      [
+        row('2026-08-04', 'IZIN', null),
+        row('2026-08-04', 'HADIR', null),
+        row('2026-08-05', 'ALPA', null),
+        row('2026-08-06', 'HADIR', 5),
+      ],
+      'weekly',
+    );
+    expect(out).toEqual([{ bucket: '2026-08-03', label: '3 Agu', avg_score: 5, sessions: 1 }]);
+  });
+
+  it('data minim (1 titik) tetap menghasilkan 1 entri, tidak error', () => {
+    expect(bucketActivenessTrend([row('2026-08-06', 'HADIR', 4)], 'weekly')).toHaveLength(1);
+    expect(bucketActivenessTrend([], 'monthly')).toEqual([]);
   });
 });
 

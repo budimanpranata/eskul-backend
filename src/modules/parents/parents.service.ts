@@ -194,9 +194,11 @@ export class ParentsService {
       for (const d of details) counts[statusKey(d.status as StatusCode)] += 1;
       const total = details.length;
 
-      const activenessTrend = details
-        .filter((d) => d.status === 'HADIR' && d.activenessScore != null)
-        .map((d) => ({ date: fmtDate(d.session.sessionDate), score: d.activenessScore }));
+      // Tren keaktifan diagregasi per minggu / bulan sesuai toggle `period` (Fase 3.2).
+      const activenessTrend = bucketActivenessTrend(
+        details.map((d) => ({ sessionDate: d.session.sessionDate, status: d.status, score: d.activenessScore })),
+        query.period,
+      );
 
       const materialsTimeline = details
         .filter((d) => d.session.materialDescription)
@@ -387,6 +389,57 @@ function jakartaToday(): string {
 
 function fmtDate(d: Date): string {
   return d.toISOString().slice(0, 10);
+}
+
+const ID_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+/** Senin (UTC) dari minggu yang memuat `d`. */
+function mondayOfWeekUTC(d: Date): Date {
+  const x = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dow = x.getUTCDay(); // 0=Minggu
+  x.setUTCDate(x.getUTCDate() - (dow === 0 ? 6 : dow - 1));
+  return x;
+}
+
+/**
+ * Agregasi skor keaktifan (hanya baris HADIR ber-skor) menjadi titik tren per
+ * minggu atau per bulan, terurut kronologis. Aman untuk data minim (1 titik pun
+ * tetap menghasilkan 1 entri — DoD Fase 3.2).
+ */
+export function bucketActivenessTrend(
+  rows: { sessionDate: Date; status: string; score: number | null }[],
+  period: 'weekly' | 'monthly',
+): { bucket: string; label: string; avg_score: number; sessions: number }[] {
+  const buckets = new Map<string, { label: string; order: number; sum: number; n: number }>();
+  for (const r of rows) {
+    if (r.status !== 'HADIR' || r.score == null) continue;
+    const d = r.sessionDate;
+    let key: string;
+    let label: string;
+    let order: number;
+    if (period === 'monthly') {
+      key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+      label = `${ID_MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+      order = d.getUTCFullYear() * 12 + d.getUTCMonth();
+    } else {
+      const mon = mondayOfWeekUTC(d);
+      key = fmtDate(mon);
+      label = `${mon.getUTCDate()} ${ID_MONTHS[mon.getUTCMonth()]}`;
+      order = mon.getTime();
+    }
+    const b = buckets.get(key) ?? { label, order, sum: 0, n: 0 };
+    b.sum += r.score;
+    b.n += 1;
+    buckets.set(key, b);
+  }
+  return [...buckets.entries()]
+    .sort((a, b) => a[1].order - b[1].order)
+    .map(([bucket, b]) => ({
+      bucket,
+      label: b.label,
+      avg_score: Math.round((b.sum / b.n) * 10) / 10,
+      sessions: b.n,
+    }));
 }
 
 export function shiftDays(dateStr: string, deltaDays: number): string {

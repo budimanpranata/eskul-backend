@@ -18,6 +18,7 @@ import { ExtracurricularsModule } from './modules/extracurriculars/extracurricul
 import { AttendanceModule } from './modules/attendance/attendance.module.js';
 import { NotificationsModule } from './modules/notifications/notifications.module.js';
 import { ReportsModule } from './modules/reports/reports.module.js';
+import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 
 @Module({
@@ -41,6 +42,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
     AttendanceModule,
     NotificationsModule,
     ReportsModule,
+    AnalyticsModule,
     AuditModule,
   ],
   controllers: [AppController],

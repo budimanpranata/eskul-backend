@@ -7,9 +7,10 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 3.1 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
-> 2.3 nilai keaktifan + 2.4 Approval Relasi Ortu + **3.1 Export Laporan PDF/Excel**
-> (async job queue, signed URL berumur pendek, audit `EXPORT_REPORT`).
+> **Status: Fase 3.2 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
+> 2.3 nilai keaktifan + 2.4 Approval Relasi Ortu + 3.1 Export Laporan PDF/Excel +
+> **3.2 Dashboard Analitik** (`GET /admin/analytics/overview`, cache Redis TTL 1 jam;
+> tren keaktifan ortu diagregasi per minggu/bulan).
 
 ## Struktur folder
 
@@ -42,10 +43,11 @@ backend/
 │   │   ├── attendance/      # ✅ POST /attendance/submit + /coach/* (today/roster/history)  (Fase 1.3)
 │   │   ├── parents/         # ✅ /parent/* (children, link-request, child-progress) + /admin/parent-relations  (Fase 1.4)
 │   │   ├── notifications/   # ✅ BullMQ processor + inbox + device tokens + PushSender  (Fase 1.5)
-│   │   └── reports/         # ✅ export PDF/Excel async (queue) + signed-URL download   (Fase 3.1)
-│   │       ├── render/          # attendance-dataset (agregasi) + pdf-renderer (pdfkit) + xlsx-renderer (exceljs)
-│   │       ├── storage/         # ReportStorage (interface) + LocalDiskReportStorage + factory
-│   │       └── report-signer.ts # HMAC-SHA256 + expires untuk URL unduhan
+│   │   ├── reports/         # ✅ export PDF/Excel async (queue) + signed-URL download   (Fase 3.1)
+│   │   │   ├── render/          # attendance-dataset (agregasi) + pdf-renderer (pdfkit) + xlsx-renderer (exceljs)
+│   │   │   ├── storage/         # ReportStorage (interface) + LocalDiskReportStorage + factory
+│   │   │   └── report-signer.ts # HMAC-SHA256 + expires untuk URL unduhan
+│   │   └── analytics/       # ✅ GET /admin/analytics/overview — agregat + cache Redis TTL 1 jam  (Fase 3.2)
 │   ├── app.module.ts
 │   └── main.ts             # global prefix /api/v1, helmet, CORS, ValidationPipe
 ├── Dockerfile
@@ -216,7 +218,8 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 
 `child-progress` payload (snake_case, sesuai kontrak): `student{full_name,class_grade,photo_url}`,
 `extracurriculars[]{ id, name, attendance_summary{total_sessions,hadir,izin,sakit,alpa,percentage},
-activeness_trend[{date,score}], materials_timeline[{date,description,coach_name,coach_feedback}] }`,
+activeness_trend[{bucket,label,avg_score,sessions}] (agregat per minggu/bulan — Fase 3.2),
+materials_timeline[{date,description,coach_name,coach_feedback}] }`,
 `latest_notification`. Query: `period` (weekly=90h / monthly=180h), `from`/`to`, `extracurricularId`.
 Ekskul tanpa sesi tetap muncul (`total_sessions:0`). Akses → audit `VIEW_STUDENT_DATA`.
 
@@ -271,6 +274,25 @@ job selesai ~1 dtk).
   (`REPORT_STORAGE_DIR`, default `./storage/reports`, dengan proteksi path-traversal). Driver S3 tinggal
   ditambah sebagai implementasi lain tanpa mengubah service.
 - Migration `20260829123518_add_report_exports` menambah tabel `report_exports` (bukan dari DDL asli) + `down.sql`.
+
+## Dashboard Analitik Sekolah (Fase 3.2)
+
+| Path (`@Roles('ADMIN')`) | Fungsi |
+|---|---|
+| `GET /admin/analytics/overview` | Agregat sekolah. Di-cache Redis (`analytics:overview:v1`, TTL 1 jam). Body: `cached` (bool), `kpi`, `participationByCategory[]`, `attendanceTrend[]` (8 minggu), `lowAttendanceByExtracurricular[]` (top-5 kehadiran terendah / ekskul). Audit `VIEW_ANALYTICS_OVERVIEW`. |
+| `GET /admin/analytics/overview?fresh=1` | Lewati cache & hitung ulang. |
+
+- Semua angka dihitung dari **window 8 minggu terakhir** (`AnalyticsService.compute` — beberapa
+  `findMany` paralel + agregasi di memori), jadi tetap **< 2 detik walau riwayat 1 tahun ajaran
+  penuh** (uji skala: 6 ekskul × 500 siswa × 52 minggu = 156k baris detail → ~820 ms uncached, ~11 ms cached).
+- `participationByCategory`: jumlah ekskul + keanggotaan + siswa unik per kategori (null → `LAINNYA`).
+- `attendanceTrend`: selalu 8 titik berurutan (minggu tanpa data → 0, bukan error).
+- `lowAttendanceByExtracurricular`: hanya siswa yang punya ≥ 1 sesi tercatat di window, urut % menaik.
+
+**Tren keaktifan Orang Tua (Bagian A).** `activeness_trend` pada `GET /parent/child-progress/:id`
+kini **diagregasi** sesuai `?period=weekly|monthly` (helper `bucketActivenessTrend`): tiap item
+`{ bucket, label, avg_score, sessions }`, terurut kronologis, hanya baris `HADIR` ber-skor.
+Aman untuk data minim (1 titik pun tetap 1 entri).
 
 ## Skrip npm
 
@@ -389,3 +411,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Setiap export tercatat di `audit_logs` (`EXPORT_REPORT`) dengan `format` + `filters` (kelas/ekskul/rentang tanggal) — **e2e (cek langsung tabel)**
 - [x] PDF (rapor per siswa, pdfkit) & Excel (data mentah, exceljs) — header `%PDF` / `PK` + `Content-Disposition: attachment` diverifikasi — **e2e**
 - [x] E2E export vs Postgres+Redis nyata: 25/25 assertion; **95 unit test** hijau (+25 dari 3.1)
+
+### Fase 3.2 (backend)
+- [x] `GET /admin/analytics/overview` memuat **< 2 detik untuk data 1 tahun ajaran penuh** — window 8 minggu, uji skala 156k baris detail → ~820 ms uncached, ~11 ms cached — **e2e skala**
+- [x] Cache Redis TTL 1 jam: panggilan ke-2 `cached:true` + `generatedAt` sama; `?fresh=1` menghitung ulang — **unit + e2e**
+- [x] `attendanceTrend` selalu 8 titik kronologis; minggu tanpa data → 0 (bukan NaN/error) — **unit + e2e**
+- [x] `lowAttendanceByExtracurricular` top-5 urut % menaik + diperkaya nama siswa — **unit + e2e**
+- [x] Tren keaktifan ortu diagregasi per minggu/bulan (`bucketActivenessTrend`), akurat saat data minim 1 titik — **unit + e2e**
+- [x] E2E analitik vs Postgres+Redis nyata: 25/25 assertion; **106 unit test** hijau (+11 dari 3.2)
