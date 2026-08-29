@@ -56,6 +56,7 @@ model User {
   auditLogs         AuditLog[]
   approvedRelations ParentStudentRelation[] @relation("RelationApprover")
   deviceTokens      DeviceToken[]
+  reportExports     ReportExport[]
 
   @@index([roleId], map: "idx_users_role")
   @@map("users")
@@ -304,4 +305,35 @@ model AuditLog {
   @@index([userId], map: "idx_audit_user")
   @@index([entityType, entityId], map: "idx_audit_entity")
   @@map("audit_logs")
+}
+
+// ============================================
+// 9. EXPORT LAPORAN (async job — Fase 3.1)
+// ============================================
+
+// Satu baris = satu permintaan export laporan. Generate berjalan asinkron di job
+// queue (BullMQ); file hasil disimpan ke object storage & hanya bisa diunduh lewat
+// signed URL berumur pendek. Tidak ada di DDL asli — ditambahkan pada Fase 3.1.
+model ReportExport {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  requestedById String    @map("requested_by") @db.Uuid
+  reportType    String    @default("attendance") @map("report_type") @db.VarChar(30)
+  format        String    @db.VarChar(10) // 'pdf' | 'xlsx'
+  filters       Json      @db.JsonB // { classGrade?, extracurricularId?, dateFrom?, dateTo? }
+  status        String    @default("PENDING") @db.VarChar(20) // PENDING/PROCESSING/READY/FAILED
+  storageKey    String?   @map("storage_key")
+  fileName      String?   @map("file_name") @db.VarChar(200)
+  fileSize      Int?      @map("file_size")
+  rowCount      Int?      @map("row_count")
+  errorMessage  String?   @map("error_message")
+  expiresAt     DateTime? @map("expires_at") @db.Timestamptz(6)
+  startedAt     DateTime? @map("started_at") @db.Timestamptz(6)
+  completedAt   DateTime? @map("completed_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  requestedBy User @relation(fields: [requestedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([requestedById], map: "idx_report_exports_user")
+  @@index([status], map: "idx_report_exports_status")
+  @@map("report_exports")
 }

@@ -7,18 +7,20 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 2.4 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
-> 2.3 nilai keaktifan + **2.4 Approval Relasi Ortu** (notif push, cooldown 24 jam, badge SUSPICIOUS).
+> **Status: Fase 3.1 selesai.** 0.1–1.5 (MVP) + 2.1 offline sync + 2.2 Scan QR +
+> 2.3 nilai keaktifan + 2.4 Approval Relasi Ortu + **3.1 Export Laporan PDF/Excel**
+> (async job queue, signed URL berumur pendek, audit `EXPORT_REPORT`).
 
 ## Struktur folder
 
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # 14 model (13 dari DDL §3.2 + device_tokens Fase 1.5)
+│   ├── schema.prisma        # 15 model (13 dari DDL §3.2 + device_tokens Fase 1.5 + report_exports Fase 3.1)
 │   ├── migrations/
 │   │   ├── 20260828233836_init/        # DDL lengkap (+ pgcrypto + 4 CHECK) + down.sql
 │   │   ├── 20260829063133_add_device_tokens/  # tabel device_tokens (FCM) + down.sql
+│   │   ├── 20260829123518_add_report_exports/ # tabel report_exports (job export) + down.sql
 │   │   └── migration_lock.toml
 │   └── seed.ts              # roles (ADMIN/PEMBINA/ORANGTUA) + 1 admin dummy (idempoten)
 ├── src/
@@ -40,7 +42,10 @@ backend/
 │   │   ├── attendance/      # ✅ POST /attendance/submit + /coach/* (today/roster/history)  (Fase 1.3)
 │   │   ├── parents/         # ✅ /parent/* (children, link-request, child-progress) + /admin/parent-relations  (Fase 1.4)
 │   │   ├── notifications/   # ✅ BullMQ processor + inbox + device tokens + PushSender  (Fase 1.5)
-│   │   └── reports/         # export PDF/Excel async        (Fase 3.1)
+│   │   └── reports/         # ✅ export PDF/Excel async (queue) + signed-URL download   (Fase 3.1)
+│   │       ├── render/          # attendance-dataset (agregasi) + pdf-renderer (pdfkit) + xlsx-renderer (exceljs)
+│   │       ├── storage/         # ReportStorage (interface) + LocalDiskReportStorage + factory
+│   │       └── report-signer.ts # HMAC-SHA256 + expires untuk URL unduhan
 │   ├── app.module.ts
 │   └── main.ts             # global prefix /api/v1, helmet, CORS, ValidationPipe
 ├── Dockerfile
@@ -242,6 +247,31 @@ job `attendance-done` (fan-out) → satu job `notify-user` per ortu ber-relasi `
 | `GET /notifications/unread-count` | `{ unread }` |
 | `POST /notifications/read` `{ ids:[] }` / `POST /notifications/read-all` | Tandai dibaca → `{ updated, unread }` |
 
+## Export Laporan PDF/Excel (Fase 3.1)
+
+Kontrak §4: `GET /api/v1/admin/reports/attendance?format=pdf|xlsx`. **Generate selalu asinkron**
+lewat job queue BullMQ (`reports` queue) — request hanya `INSERT` baris `report_exports` +
+`queue.add` lalu balas **202**, tidak menunggu file jadi (uji: 500 siswa → respons 23 ms,
+job selesai ~1 dtk).
+
+| Path (semua `@Roles('ADMIN')` kecuali download) | Fungsi |
+|---|---|
+| `GET /admin/reports/attendance/preview?classGrade=&extracurricularId=&dateFrom=&dateTo=&page=&pageSize=` | Tabel data (1 baris per siswa×ekskul): hadir/izin/sakit/alpa, %kehadiran, rata2 keaktifan, catatan pembina. `meta.dateFrom/dateTo` = rentang efektif (default 180 hari terakhir) |
+| `GET /admin/reports/attendance?format=pdf\|xlsx&<filter>` | **202** — buat `report_exports` (PENDING) + enqueue job + audit `EXPORT_REPORT` (menyimpan `format` + `filters`) |
+| `GET /admin/reports/exports?page=&pageSize=` | Riwayat export; baris READY menyertakan `downloadUrl` + `downloadExpiresAt` yang baru di-sign |
+| `GET /admin/reports/exports/:id` | Status satu export (polling web) + `downloadUrl` bila READY |
+| `GET /admin/reports/downloads/:id?expires=&sig=` | **`@Public()`** — stream file. Otorisasi murni dari **HMAC-SHA256(`id.expires`)** + `expires`. Sig salah → 403; `expires` lewat / file lewat masa simpan → 410; belum READY → 409 |
+
+- **Worker** `ReportsProcessor` (`@Processor('reports')`, concurrency 2): `runExportJob` → set PROCESSING →
+  `buildAttendanceDataset` (agregasi via beberapa `findMany`, aman untuk ratusan siswa) →
+  `renderAttendancePdf` (pdfkit, 1 halaman "rapor" per siswa) / `renderAttendanceXlsx` (exceljs, sheet Info + Data) →
+  `storage.put` → set READY + `storageKey`/`fileName`/`fileSize`/`rowCount`/`expiresAt` (now + TTL).
+  Gagal → status FAILED + `errorMessage`, lalu rethrow (retry 3× + dead-letter mengikuti `QueueModule`).
+- **Storage** — interface `ReportStorage` (token DI `REPORT_STORAGE`); default `LocalDiskReportStorage`
+  (`REPORT_STORAGE_DIR`, default `./storage/reports`, dengan proteksi path-traversal). Driver S3 tinggal
+  ditambah sebagai implementasi lain tanpa mengubah service.
+- Migration `20260829123518_add_report_exports` menambah tabel `report_exports` (bukan dari DDL asli) + `down.sql`.
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -268,6 +298,9 @@ Lihat `.env.example` untuk daftar lengkap.
 | `REDIS_HOST` / `REDIS_PORT` | Koneksi Redis |
 | `API_PREFIX` | Prefix global route, default `api/v1` |
 | `CORS_ALLOWED_ORIGINS` | Daftar origin dipisah koma (web admin, deep link mobile) |
+| `REPORT_STORAGE_DIR` | Direktori file export bila S3 tak dikonfigurasi (default `./storage/reports`) |
+| `REPORT_SIGNED_URL_TTL` | Umur signed URL unduhan (detik), default 3600 |
+| `REPORT_SIGNING_SECRET` | Rahasia HMAC penanda-tangan URL unduhan; kosong → pakai `JWT_ACCESS_SECRET` |
 
 ## Catatan / utang teknis
 
@@ -349,3 +382,10 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Badge `suspicious` benar: > 5 siswa berbeda / 1 nomor HP / 24 jam → true; 1 pengajuan → false — **unit + e2e**
 - [x] Notifikasi push `RELATION_DECISION` (approved/rejected + alasan) terkirim via queue — **e2e (poll `/notifications`)**
 - [x] E2E relasi vs Postgres+Redis nyata: 9/9 assertion; 70 unit test hijau
+
+### Fase 3.1 (backend)
+- [x] Export 500 siswa **tidak** membuat request timeout — berjalan async via queue — **e2e skala: respons 202 dalam ~23 ms, job selesai ~1 dtk**
+- [x] File hasil export tidak bisa diakses tanpa signed URL valid & belum expired — tanpa `sig` → 403, `sig` salah → 403, `expires` dipalsukan → 410, valid → 200 — **e2e**
+- [x] Setiap export tercatat di `audit_logs` (`EXPORT_REPORT`) dengan `format` + `filters` (kelas/ekskul/rentang tanggal) — **e2e (cek langsung tabel)**
+- [x] PDF (rapor per siswa, pdfkit) & Excel (data mentah, exceljs) — header `%PDF` / `PK` + `Content-Disposition: attachment` diverifikasi — **e2e**
+- [x] E2E export vs Postgres+Redis nyata: 25/25 assertion; **95 unit test** hijau (+25 dari 3.1)

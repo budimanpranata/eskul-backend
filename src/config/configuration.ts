@@ -34,6 +34,16 @@ export default () => ({
     signedUrlTtlSeconds: parseInt(process.env.S3_SIGNED_URL_TTL ?? '300', 10),
   },
 
+  reports: {
+    // Direktori lokal tempat file export disimpan bila driver object storage
+    // (S3) belum dikonfigurasi. Fase 3.1.
+    storageDir: process.env.REPORT_STORAGE_DIR ?? './storage/reports',
+    // Umur signed URL unduhan (detik). Default 1 jam (DoD Fase 3.1).
+    signedUrlTtlSeconds: parseInt(process.env.REPORT_SIGNED_URL_TTL ?? '3600', 10),
+    // Rahasia HMAC untuk menandatangani URL unduhan. Kosong → pakai JWT_ACCESS_SECRET.
+    signingSecret: process.env.REPORT_SIGNING_SECRET || process.env.JWT_ACCESS_SECRET,
+  },
+
   fcm: {
     projectId: process.env.FCM_PROJECT_ID,
     credentialsPath: process.env.FCM_CREDENTIALS_PATH,
