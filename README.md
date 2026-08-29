@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 1.2 selesai.** Scaffolding (0.1) + skema DB (0.2) + Auth & RBAC (1.1)
-> + **CRUD Data Master** students/coaches/extracurriculars (1.2). Modul lain masih kerangka.
+> **Status: Fase 1.3 selesai.** 0.1 scaffold + 0.2 skema DB + 1.1 Auth/RBAC
+> + 1.2 CRUD Data Master + **1.3 Presensi & Materi** (`/coach/*`, `/attendance/submit`).
 
 ## Struktur folder
 
@@ -37,8 +37,8 @@ backend/
 │   │   ├── students/        # ✅ CRUD + soft-delete + qr_token + import Excel        (Fase 1.2)
 │   │   ├── coaches/         # ✅ CRUD (buat user PEMBINA) + soft-delete              (Fase 1.2)
 │   │   ├── extracurriculars/# ✅ CRUD + jadwal (anti-bentrok) + anggota (kapasitas)  (Fase 1.2)
+│   │   ├── attendance/      # ✅ POST /attendance/submit + /coach/* (today/roster/history)  (Fase 1.3)
 │   │   ├── parents/         # relasi ortu-siswa, dashboard  (Fase 1.4 / 2.4)
-│   │   ├── attendance/      # sesi presensi + materi        (Fase 1.3 / 2.x)
 │   │   ├── notifications/   # push FCM via job queue        (Fase 1.5)
 │   │   └── reports/         # export PDF/Excel async        (Fase 3.1)
 │   ├── app.module.ts
@@ -169,6 +169,31 @@ Listing memakai query `page`, `pageSize` (≤100), `search`, dan filter spesifik
 Setiap `create/update/delete` menulis `audit_logs` (action `CREATE_STUDENT`, `IMPORT_STUDENTS`,
 `DEACTIVATE_COACH`, `CREATE_SCHEDULE`, `ENROLL_MEMBERS`, …) dengan `entity_type` & `entity_id` yang benar.
 
+## Presensi & materi latihan (Fase 1.3)
+
+Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurriculars.default_coach_id`.
+
+| Path | Fungsi |
+|---|---|
+| `GET /coach/today-sessions` | Jadwal ekskul hari ini (zona Asia/Jakarta) milik pembina login + status sesi bila sudah disubmit hari itu |
+| `GET /coach/extracurriculars/:id/roster` | Siswa aktif untuk presensi (403 bila bukan pembina ekskul tsb) |
+| `GET /coach/sessions?limit=` | Riwayat sesi pembina + ringkasan per status (GP-07) |
+| `POST /attendance/submit` | Satu request: presensi + materi. Kontrak dokumen desain **bagian 4.1** |
+
+`POST /attendance/submit`:
+- **201** `{ session_id, status:'SUBMITTED', synced_at, summary:{ total_students, hadir, izin, sakit, alpa } }`
+- **409** `{ error:'SESSION_ALREADY_SYNCED', message, existing_session_id }` — replay `client_generated_id`
+  yang sama, **atau** sudah ada sesi untuk `(extracurricular_id, session_date, coach_id)` (idempotency + UNIQUE constraint)
+- **422** `{ error:'VALIDATION_ERROR', details:[{ field, message }] }` — status di luar enum,
+  siswa bukan anggota (`attendances[i].student_id`), tanggal masa depan, `schedule_id` tak cocok
+- **403** bila bukan pembina ekskul tsb
+- `Idempotency-Key` header diterima (opsional; sama dengan `client_generated_id`)
+- submit sukses → `audit_logs` action `SUBMIT_ATTENDANCE`
+
+> ValidationPipe global kini memakai `exceptionFactory` terstruktur
+> (`{ error:'VALIDATION_ERROR', details:[{field,message}] }`, kode 400 untuk endpoint umum).
+> `Validation422Filter` memetakannya ke **422** khusus `/attendance/submit`.
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -233,3 +258,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Semua aksi CRUD tercatat di `audit_logs` dengan `entity_type` & `entity_id` benar — **verified via psql**
 - [x] Seluruh endpoint `/admin/*` menolak non-ADMIN (403) & tanpa token (401) — **e2e verified**
 - [x] E2E data-master vs Postgres nyata: 33/33 assertion; 42 unit test hijau
+
+### Fase 1.3
+- [x] `client_generated_id` idempoten: replay → 409 `SESSION_ALREADY_SYNCED` (tunjuk sesi lama) — **e2e**
+- [x] UNIQUE `(extracurricular_id, session_date, coach_id)` → 409 walau `client_generated_id` beda — **e2e**
+- [x] Error validasi 422 bentuk `{error, details:[{field,message}]}` per field (`attendances[i].status`, dst) — **e2e**
+- [x] `summary` benar (hadir/izin/sakit/alpa/total) & status akhir `SUBMITTED`; audit `SUBMIT_ATTENDANCE` — **e2e**
+- [x] RBAC: hanya PEMBINA; hanya ekskul yang diampu (403) — **e2e**
+- [x] E2E attendance vs Postgres nyata: 19/19 assertion; 51 unit test hijau
