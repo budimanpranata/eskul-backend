@@ -1,11 +1,143 @@
-import { Controller } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Ip,
+  Param,
+  ParseUUIDPipe,
+  Post,
+  Put,
+  Query,
+} from '@nestjs/common';
+
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import { Roles } from '../../common/decorators/roles.decorator.js';
+import { PaginationQueryDto } from '../../common/dto/pagination.dto.js';
+import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import {
+  AddMembersDto,
+  CreateExtracurricularDto,
+  CreateScheduleDto,
+  ListExtracurricularsQueryDto,
+  UpdateExtracurricularDto,
+  UpdateScheduleDto,
+} from './dto/extracurricular.dto.js';
 import { ExtracurricularsService } from './extracurriculars.service.js';
 
-/**
- * Ekskul, jadwal, dan keanggotaan siswa. Fase 1.2.
- * FASE 0: kerangka controller — route ditambahkan pada fase terkait.
- */
+/** Ekskul + jadwal + keanggotaan — khusus role ADMIN. */
+@Roles('ADMIN')
 @Controller('admin/extracurriculars')
 export class ExtracurricularsController {
-  constructor(private readonly extracurricularsService: ExtracurricularsService) {}
+  constructor(private readonly ekskul: ExtracurricularsService) {}
+
+  private actor(user: AuthenticatedUser, ip: string) {
+    return { id: user.id, ip: ip ?? null };
+  }
+
+  // --- ekskul ---
+  @Get()
+  list(@Query() query: ListExtracurricularsQueryDto) {
+    return this.ekskul.list(query);
+  }
+
+  @Get(':id')
+  getOne(@Param('id', ParseUUIDPipe) id: string) {
+    return this.ekskul.getById(id);
+  }
+
+  @Post()
+  create(
+    @Body() dto: CreateExtracurricularDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.create(dto, this.actor(user, ip));
+  }
+
+  @Put(':id')
+  update(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateExtracurricularDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.update(id, dto, this.actor(user, ip));
+  }
+
+  @Delete(':id')
+  deactivate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.deactivate(id, this.actor(user, ip));
+  }
+
+  @Post(':id/reactivate')
+  reactivate(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.reactivate(id, this.actor(user, ip));
+  }
+
+  // --- jadwal ---
+  @Post(':id/schedules')
+  addSchedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CreateScheduleDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.addSchedule(id, dto, this.actor(user, ip));
+  }
+
+  @Put(':id/schedules/:scheduleId')
+  updateSchedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('scheduleId', ParseUUIDPipe) scheduleId: string,
+    @Body() dto: UpdateScheduleDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.updateSchedule(id, scheduleId, dto, this.actor(user, ip));
+  }
+
+  @Delete(':id/schedules/:scheduleId')
+  removeSchedule(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('scheduleId', ParseUUIDPipe) scheduleId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.removeSchedule(id, scheduleId, this.actor(user, ip));
+  }
+
+  // --- anggota ---
+  @Get(':id/members')
+  listMembers(@Param('id', ParseUUIDPipe) id: string, @Query() q: PaginationQueryDto) {
+    return this.ekskul.listMembers(id, q.page, q.pageSize);
+  }
+
+  @Post(':id/members')
+  addMembers(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AddMembersDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.addMembers(id, dto, this.actor(user, ip));
+  }
+
+  @Delete(':id/members/:studentId')
+  removeMember(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('studentId', ParseUUIDPipe) studentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.ekskul.removeMember(id, studentId, this.actor(user, ip));
+  }
 }
