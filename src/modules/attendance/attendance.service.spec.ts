@@ -55,7 +55,9 @@ describe('AttendanceService.submit', () => {
         findMany: vi.fn().mockResolvedValue([
           { studentId: baseDto.attendances[0].student_id, student: { isActive: true } },
         ]),
+        findUnique: vi.fn().mockResolvedValue({ id: 'member-1' }),
       },
+      student: { findUnique: vi.fn() },
       $transaction: vi.fn().mockResolvedValue('new-session-id'),
     };
     audit = { log: vi.fn().mockResolvedValue(undefined) };
@@ -128,6 +130,45 @@ describe('AttendanceService.submit', () => {
       expect(e).toBeInstanceOf(UnprocessableEntityException);
       expect(e.getResponse().details[0].field).toBe('session_date');
     }
+  });
+
+  describe('resolveQrScan', () => {
+    const EK = baseDto.extracurricular_id;
+
+    it('token tidak dikenal → 404 QR_INVALID', async () => {
+      prisma.student.findUnique.mockResolvedValue(null);
+      try {
+        await service.resolveQrScan('u1', 'token-x', EK, null);
+        throw new Error('harus throw');
+      } catch (e: any) {
+        expect(e.getResponse()).toMatchObject({ error: 'QR_INVALID' });
+      }
+    });
+
+    it('siswa bukan anggota ekskul → 422 NOT_A_MEMBER', async () => {
+      prisma.student.findUnique.mockResolvedValue({
+        id: 'stu-1', nis: 'N', fullName: 'A', classGrade: '5A', photoUrl: null, isActive: true,
+      });
+      prisma.extracurricularMember.findUnique.mockResolvedValue(null);
+      try {
+        await service.resolveQrScan('u1', 'tok', EK, null);
+        throw new Error('harus throw');
+      } catch (e: any) {
+        expect(e.getResponse()).toMatchObject({ error: 'NOT_A_MEMBER' });
+      }
+    });
+
+    it('token valid + anggota → student + audit QR_SCAN', async () => {
+      prisma.student.findUnique.mockResolvedValue({
+        id: 'stu-1', nis: 'N9', fullName: 'Budi', classGrade: '5A', photoUrl: null, isActive: true,
+      });
+      prisma.extracurricularMember.findUnique.mockResolvedValue({ id: 'm1' });
+      const res = await service.resolveQrScan('u1', 'tok', EK, '1.2.3.4');
+      expect(res.student).toMatchObject({ id: 'stu-1', fullName: 'Budi', classGrade: '5A' });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'QR_SCAN', entityId: 'stu-1' }),
+      );
+    });
   });
 });
 

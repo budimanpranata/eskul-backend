@@ -78,6 +78,16 @@ export class StudentsController {
     return this.students.reactivate(id, { id: user.id, ip: ip ?? null });
   }
 
+  /** Rotasi qr_token (kartu hilang) — token lama langsung tidak berlaku. */
+  @Post(':id/rotate-qr')
+  rotateQr(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.students.rotateQrToken(id, { id: user.id, ip: ip ?? null });
+  }
+
   @Post('import')
   @UseInterceptors(
     FileInterceptor('file', {

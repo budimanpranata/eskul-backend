@@ -1,10 +1,14 @@
 import {
+  Body,
   Controller,
   DefaultValuePipe,
   Get,
+  HttpCode,
+  Ip,
   Param,
   ParseIntPipe,
   ParseUUIDPipe,
+  Post,
   Query,
 } from '@nestjs/common';
 
@@ -12,6 +16,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import { AttendanceService } from './attendance.service.js';
+import { QrScanDto } from './dto/qr-scan.dto.js';
 
 /** Endpoint pendukung aplikasi Pembina (dokumen desain bagian 4.3). */
 @Roles('PEMBINA')
@@ -27,6 +32,16 @@ export class CoachController {
   @Get('extracurriculars/:id/roster')
   roster(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
     return this.attendance.roster(user.id, id);
+  }
+
+  @Post('students/qr-scan')
+  @HttpCode(200)
+  qrScan(
+    @Body() dto: QrScanDto,
+    @CurrentUser() user: AuthenticatedUser,
+    @Ip() ip: string,
+  ) {
+    return this.attendance.resolveQrScan(user.id, dto.qr_token, dto.extracurricular_id, ip ?? null);
   }
 
   @Get('sessions')

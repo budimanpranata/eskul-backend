@@ -111,6 +111,69 @@ export class AttendanceService {
     };
   }
 
+  /**
+   * POST /coach/students/qr-scan — resolusi qr_token → student, khusus untuk
+   * ekskul yang diampu pembina. Token yang sudah dirotasi tidak akan cocok
+   * (lookup berdasarkan string qr_token yang tersimpan saat ini).
+   */
+  async resolveQrScan(
+    userId: string,
+    qrToken: string,
+    extracurricularId: string,
+    ip: string | null,
+  ) {
+    const coach = await this.getCoachOrThrow(userId);
+    const ekskul = await this.prisma.extracurricular.findUnique({
+      where: { id: extracurricularId },
+      select: { id: true, isActive: true, defaultCoachId: true },
+    });
+    if (!ekskul || !ekskul.isActive) throw new NotFoundException('Ekstrakurikuler tidak ditemukan.');
+    if (ekskul.defaultCoachId !== coach.id) {
+      throw new ForbiddenException('Anda bukan pembina ekstrakurikuler ini.');
+    }
+
+    const student = await this.prisma.student.findUnique({
+      where: { qrToken },
+      select: { id: true, nis: true, fullName: true, classGrade: true, photoUrl: true, isActive: true },
+    });
+    if (!student || !student.isActive) {
+      throw new NotFoundException({
+        error: 'QR_INVALID',
+        message: 'Kartu QR tidak dikenal atau sudah tidak berlaku.',
+      });
+    }
+
+    const member = await this.prisma.extracurricularMember.findUnique({
+      where: { extracurricularId_studentId: { extracurricularId, studentId: student.id } },
+      select: { id: true },
+    });
+    if (!member) {
+      throw new UnprocessableEntityException({
+        error: 'NOT_A_MEMBER',
+        message: `${student.fullName} bukan anggota ekstrakurikuler ini.`,
+      });
+    }
+
+    await this.audit.log({
+      userId,
+      action: 'QR_SCAN',
+      entityType: 'student',
+      entityId: student.id,
+      ipAddress: ip,
+      metadata: { extracurricularId },
+    });
+
+    return {
+      student: {
+        id: student.id,
+        nis: student.nis,
+        fullName: student.fullName,
+        classGrade: student.classGrade,
+        photoUrl: student.photoUrl,
+      },
+    };
+  }
+
   /** GET /coach/sessions — riwayat sesi yang pernah disubmit pembina (GP-07). */
   async history(userId: string, limit: number) {
     const coach = await this.getCoachOrThrow(userId);

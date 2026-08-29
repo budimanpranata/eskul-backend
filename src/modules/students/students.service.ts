@@ -171,6 +171,27 @@ export class StudentsService {
   }
 
   /**
+   * Rotasi qr_token (kartu hilang). Token lama LANGSUNG tidak berlaku karena
+   * kolom `qr_token` ditimpa nilai acak baru.
+   */
+  async rotateQrToken(id: string, actor: Actor) {
+    await this.getById(id);
+    const student = await this.prisma.student.update({
+      where: { id },
+      data: { qrToken: generateQrToken(), qrTokenRotatedAt: new Date() },
+      select: PUBLIC_SELECT,
+    });
+    await this.audit.log({
+      userId: actor.id,
+      action: 'ROTATE_QR_TOKEN',
+      entityType: 'student',
+      entityId: id,
+      ipAddress: actor.ip,
+    });
+    return student;
+  }
+
+  /**
    * Import massal dari file Excel (.xlsx). Kolom yang dibaca (baris 1 = header,
    * case-insensitive): nis, nama|full_name, kelas|class_grade, gender (L/P, opsional),
    * tanggal_lahir|date_of_birth (opsional).
