@@ -7,8 +7,8 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 1.3 selesai.** 0.1 scaffold + 0.2 skema DB + 1.1 Auth/RBAC
-> + 1.2 CRUD Data Master + **1.3 Presensi & Materi** (`/coach/*`, `/attendance/submit`).
+> **Status: Fase 1.4 selesai.** 0.1–1.3 + **1.4 Dashboard Orang Tua**
+> (`/auth/register`, `/parent/*`, `/admin/parent-relations/*`).
 
 ## Struktur folder
 
@@ -38,7 +38,7 @@ backend/
 │   │   ├── coaches/         # ✅ CRUD (buat user PEMBINA) + soft-delete              (Fase 1.2)
 │   │   ├── extracurriculars/# ✅ CRUD + jadwal (anti-bentrok) + anggota (kapasitas)  (Fase 1.2)
 │   │   ├── attendance/      # ✅ POST /attendance/submit + /coach/* (today/roster/history)  (Fase 1.3)
-│   │   ├── parents/         # relasi ortu-siswa, dashboard  (Fase 1.4 / 2.4)
+│   │   ├── parents/         # ✅ /parent/* (children, link-request, child-progress) + /admin/parent-relations  (Fase 1.4)
 │   │   ├── notifications/   # push FCM via job queue        (Fase 1.5)
 │   │   └── reports/         # export PDF/Excel async        (Fase 3.1)
 │   ├── app.module.ts
@@ -194,6 +194,25 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 > (`{ error:'VALIDATION_ERROR', details:[{field,message}] }`, kode 400 untuk endpoint umum).
 > `Validation422Filter` memetakannya ke **422** khusus `/attendance/submit`.
 
+## Dashboard Orang Tua (Fase 1.4)
+
+| Path | Akses | Fungsi |
+|---|---|---|
+| `POST /auth/register` | publik | Pendaftaran mandiri ORANGTUA (`consent:true` wajib) → users+parents + token; audit `PARENT_CONSENT_GIVEN` |
+| `GET /parent/children` | ORANGTUA | Anak dengan relasi `APPROVED` |
+| `POST /parent/link-request` | ORANGTUA | Ajukan relasi via `{ nis, studentName }` (verifikasi silang nama) → status `PENDING` |
+| `GET /parent/child-progress/:studentId` | ORANGTUA | **Kontrak §4.2**. Wajib relasi `APPROVED`, jika tidak → **403** `{ error:'UNAUTHORIZED_RELATION' }` |
+| `GET /admin/parent-relations?status=` | ADMIN | Daftar relasi (default `PENDING`) + info ortu & siswa |
+| `PUT /admin/parent-relations/:id/approve` | ADMIN | `{ decision:'APPROVED'\|'REJECTED', reason? }` → set `approved_by`/`approved_at` + audit |
+
+`child-progress` payload (snake_case, sesuai kontrak): `student{full_name,class_grade,photo_url}`,
+`extracurriculars[]{ id, name, attendance_summary{total_sessions,hadir,izin,sakit,alpa,percentage},
+activeness_trend[{date,score}], materials_timeline[{date,description,coach_name,coach_feedback}] }`,
+`latest_notification`. Query: `period` (weekly=90h / monthly=180h), `from`/`to`, `extracurricularId`.
+Ekskul tanpa sesi tetap muncul (`total_sessions:0`). Akses → audit `VIEW_STUDENT_DATA`.
+
+> Notifikasi push saat approve/reject & anti-spam pengajuan ulang → Fase 1.5 / 2.4.
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -266,3 +285,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] `summary` benar (hadir/izin/sakit/alpa/total) & status akhir `SUBMITTED`; audit `SUBMIT_ATTENDANCE` — **e2e**
 - [x] RBAC: hanya PEMBINA; hanya ekskul yang diampu (403) — **e2e**
 - [x] E2E attendance vs Postgres nyata: 19/19 assertion; 51 unit test hijau
+
+### Fase 1.4
+- [x] Ortu tanpa relasi APPROVED **tidak bisa** melihat data anak apa pun (403 `UNAUTHORIZED_RELATION`)
+      sebelum approve, 200 setelah, 403 utk siswa lain — **verifikasi via test API langsung**
+- [x] Dashboard `child-progress` menampilkan state jelas saat kosong (ekskul tanpa sesi → `total_sessions:0`) — **e2e**
+- [x] `link-request` → PENDING; dedup 409; nama tak cocok 400; NIS tak ada 404 — **e2e**
+- [x] Admin approve → APPROVED + audit; RBAC lintas-role 403 — **e2e**
+- [x] E2E parent vs Postgres nyata: 24/24 assertion; 57 unit test hijau
