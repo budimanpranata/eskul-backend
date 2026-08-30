@@ -26,7 +26,7 @@ backend/
 │   │   ├── 20260829234941_add_mfa/     # users.mfa_secret/enabled_at/last_counter + mfa_recovery_codes + down.sql
 │   │   ├── 20260830015410_add_notif_inbox_index/ # idx_notif_user_sent (user_id, sent_at DESC) + down.sql
 │   │   └── migration_lock.toml
-│   └── seed.ts              # roles (ADMIN_SUPER/ADMIN/PEMBINA/ORANGTUA) + 2 admin dummy (idempoten)
+│   └── seed.ts              # roles + admin/pembina/ortu dummy + fixture demo end-to-end (idempoten)
 ├── src/
 │   ├── config/configuration.ts # env terpusat (ConfigModule)
 │   ├── prisma/                  # PrismaModule + PrismaService (global)
@@ -96,12 +96,22 @@ docker compose up -d postgres redis   # hanya infra
 npm install
 npm run prisma:generate               # generate Prisma Client (wajib sebelum build/run)
 npm run prisma:migrate:deploy         # terapkan migration ke DB
-npm run db:seed                       # roles + admin dummy
+npm run db:seed                       # roles + admin/pembina/ortu dummy + fixture demo
 npm run start:dev
 ```
 
 API: <http://localhost:3000/api/v1/health>
-Admin dummy hasil seed: `admin@eskul.test` / `Admin#12345` (dev only).
+
+Akun dummy hasil seed (dev only, idempoten):
+
+| Akun | Kredensial | Peran |
+|---|---|---|
+| `admin@eskul.test` | `Admin#12345` | ADMIN |
+| `superadmin@eskul.test` | `Super#12345` | ADMIN_SUPER (audit log) |
+| `pembina@eskul.test` | `Pembina#12345` | PEMBINA — mengampu ekskul "Futsal (Dummy)" |
+| `ortu@eskul.test` | `Ortu#12345` | ORANGTUA — anak "Budi Siswa Contoh" (relasi APPROVED) |
+
+Fixture demo: ekskul **Futsal (Dummy)** + 2 siswa (Budi, Siti) + 2 jadwal + 1 sesi presensi tersubmit (Senin terakhir) → mode Pembina & Orang Tua langsung bisa dicoba.
 
 > **Bentrok port?** Bila 5432/6379 sudah dipakai PostgreSQL/Redis lain di mesin Anda,
 > ubah `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` di `.env` (default 55432 / 63790),
@@ -466,7 +476,7 @@ free-text trigram 937 ms, facets 84 ms (semua < 3 dtk — DoD).
 | `npm run prisma:migrate:deploy` | Terapkan migration yang sudah ada |
 | `npm run prisma:reset` | Drop + re-apply + seed (dev only) |
 | `npm run prisma:studio` | Prisma Studio (GUI data) |
-| `npm run db:seed` | Seed roles + admin dummy (idempoten) |
+| `npm run db:seed` | Seed roles + admin/pembina/ortu dummy + fixture demo (idempoten) |
 
 ## Konfigurasi environment
 
@@ -511,7 +521,7 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Migration berjalan sukses dari kosong (`prisma migrate deploy`) tanpa error — **verified**
 - [x] Seluruh constraint DDL ada: 13 tabel, 17 FK, 14 index `idx_*`, semua UNIQUE, 4 CHECK, extension pgcrypto — **verified via `\d`/`pg_constraint`**
 - [x] Rollback (`down.sql`) berfungsi tanpa merusak, lalu bisa apply-ulang — **verified**
-- [x] Seed: 3 roles + 1 admin dummy, idempoten (aman dijalankan berulang) — **verified**
+- [x] Seed: 4 roles + admin/pembina/ortu dummy + fixture demo (ekskul/siswa/jadwal/relasi/sesi), idempoten (aman dijalankan berulang, verifikasi: re-run → count tidak bertambah) — **verified**
 
 ### Fase 1.1
 - [x] Login gagal → pesan generik, tidak membocorkan email vs password — **unit + e2e verified**
