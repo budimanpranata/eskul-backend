@@ -3,6 +3,7 @@ import { Body, Controller, Get, HttpCode, Ip, Post } from '@nestjs/common';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { MfaExempt } from '../../common/decorators/mfa-exempt.decorator.js';
 import { Public } from '../../common/decorators/public.decorator.js';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import { AuthService } from './auth.service.js';
@@ -25,6 +26,7 @@ export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
   @Public()
+  @RateLimit({ limit: 8, windowSeconds: 60, scope: 'auth:login' })
   @Post('login')
   @HttpCode(200)
   login(@Body() dto: LoginDto, @Ip() ip: string) {
@@ -32,6 +34,7 @@ export class AuthController {
   }
 
   @Public()
+  @RateLimit({ limit: 10, windowSeconds: 60, scope: 'auth:login-mfa' })
   @Post('login/mfa')
   @HttpCode(200)
   loginMfa(@Body() dto: MfaLoginDto, @Ip() ip: string) {
@@ -39,6 +42,7 @@ export class AuthController {
   }
 
   @Public()
+  @RateLimit({ limit: 30, windowSeconds: 60, scope: 'auth:refresh' })
   @Post('refresh')
   @HttpCode(200)
   refresh(@Body() dto: RefreshDto, @Ip() ip: string) {
@@ -47,6 +51,7 @@ export class AuthController {
 
   /** Pendaftaran mandiri Orang Tua (dokumen desain 5.2). */
   @Public()
+  @RateLimit({ limit: 5, windowSeconds: 3600, scope: 'auth:register' })
   @Post('register')
   @HttpCode(201)
   register(@Body() dto: RegisterParentDto, @Ip() ip: string) {
@@ -85,6 +90,7 @@ export class AuthController {
 
   @Roles('ADMIN', 'ADMIN_SUPER')
   @MfaExempt()
+  @RateLimit({ limit: 10, windowSeconds: 300, scope: 'auth:mfa-enable' })
   @Post('mfa/enable')
   @HttpCode(200)
   mfaEnable(
@@ -96,6 +102,7 @@ export class AuthController {
   }
 
   @Roles('ADMIN', 'ADMIN_SUPER')
+  @RateLimit({ limit: 10, windowSeconds: 300, scope: 'auth:mfa-disable' })
   @Post('mfa/disable')
   @HttpCode(200)
   mfaDisable(
@@ -107,6 +114,7 @@ export class AuthController {
   }
 
   @Roles('ADMIN', 'ADMIN_SUPER')
+  @RateLimit({ limit: 10, windowSeconds: 300, scope: 'auth:mfa-recovery' })
   @Post('mfa/recovery-codes')
   @HttpCode(200)
   mfaRegenerateRecovery(

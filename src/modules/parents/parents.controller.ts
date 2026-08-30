@@ -2,6 +2,7 @@ import { Body, Controller, Get, Ip, Param, ParseUUIDPipe, Post, Query } from '@n
 
 import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import { ChildProgressQueryDto, LinkRequestDto } from './dto/parent.dto.js';
@@ -19,6 +20,8 @@ export class ParentsController {
     return this.parents.children(user.id);
   }
 
+  // Batasi enumerasi NIS (walau sudah ada verifikasi nama + cooldown 24 jam per relasi).
+  @RateLimit({ limit: 12, windowSeconds: 600, scope: 'parent:link-request' })
   @Post('link-request')
   linkRequest(
     @Body() dto: LinkRequestDto,

@@ -7,9 +7,9 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 4.2 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 + 4.1 Audit Log Lengkap +
-> **4.2 MFA (TOTP) untuk Admin** — login 2 langkah, `MfaGuard` global memblok admin
-> tanpa MFA, recovery codes sekali-pakai, anti-replay TOTP.
+> **Status: Fase 4.3 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 + 4.1 Audit Log +
+> 4.2 MFA (TOTP) + **4.3 Security Review** — rate limiting Redis (`RateLimitGuard`),
+> helmet/HSTS di-hardening, CORS wildcard ditolak, `SECURITY-REVIEW.md` (0 Critical/High wajib).
 
 ## Struktur folder
 
@@ -31,8 +31,8 @@ backend/
 │   ├── redis/                   # RedisModule + RedisService (global)
 │   ├── queue/                   # QueueModule — BullMQ di atas Redis (attempts:3, backoff exp) (Fase 1.5)
 │   ├── common/
-│   │   ├── decorators/         # @Public, @Roles, @CurrentUser, @Audit (4.1), @MfaExempt (4.2)
-│   │   ├── guards/             # JwtAuthGuard, RolesGuard (hierarki ADMIN_SUPER⊃ADMIN), MfaGuard (4.2)
+│   │   ├── decorators/         # @Public, @Roles, @CurrentUser, @Audit (4.1), @MfaExempt (4.2), @RateLimit/@NoRateLimit (4.3)
+│   │   ├── guards/             # RateLimitGuard (4.3, Redis), JwtAuthGuard, RolesGuard (ADMIN_SUPER⊃ADMIN), MfaGuard (4.2)
 │   │   ├── interceptors/       # AuditInterceptor global — tulis audit_logs dari @Audit (Fase 4.1)
 │   │   └── types/              # AuthenticatedUser, RoleCode, roleSatisfies, isAdminRole, *TokenPayload
 │   ├── modules/
@@ -55,9 +55,10 @@ backend/
 │   │       ├── *.service.ts     # @Cron + run-guard Redis + enqueue fan-out
 │   │       └── *.processor.ts   # fan-out → batch ber-delay → enqueueUserNotification per wali
 │   ├── app.module.ts
-│   └── main.ts             # global prefix /api/v1, helmet, CORS, ValidationPipe
+│   └── main.ts             # global prefix /api/v1, helmet+HSTS (4.3), CORS (tolak *), ValidationPipe
 ├── Dockerfile
 ├── docker-compose.yml      # postgres + redis + api
+├── SECURITY-REVIEW.md      # self-review keamanan Fase 4.3 (baseline pentest)
 └── .env.example
 ```
 
@@ -195,6 +196,32 @@ umur `MFA_CHALLENGE_TTL` = 5 mnt, **tidak** menerbitkan sesi) → `POST /auth/lo
 - **Recovery code**: format `XXXXX-XXXXX` (alfabet tanpa 0/O/1/I). Dicocokkan ke hash argon2id
   yang `used_at IS NULL`, lalu `updateMany({ id, usedAt:null })` (guard balapan) → sekali pakai.
 - Migration `20260829234941_add_mfa` (+ `down.sql`). Dep baru: `otplib`.
+
+## Rate limiting & hardening (Fase 4.3)
+
+**`RateLimitGuard`** (`common/guards/`, `APP_GUARD` pertama di `AuthModule`) — fixed-window
+per-IP di Redis. Handler ber-`@RateLimit({ limit, windowSeconds, scope })` → batas ketat;
+lainnya → batas global longgar (`RATE_LIMIT_GLOBAL_*`). `@NoRateLimit()` melewati (mis. `/health`).
+Melebihi batas → **429 `{ error:'RATE_LIMITED', retryAfterSeconds }`** + header `Retry-After`
+& `X-RateLimit-*`. **Fail-open** bila Redis mati.
+
+| Endpoint | Batas / IP |
+|---|---|
+| `POST /auth/login` | 8 / 60 dtk |
+| `POST /auth/login/mfa` | 10 / 60 dtk |
+| `POST /auth/refresh` | 30 / 60 dtk |
+| `POST /auth/register` | 5 / 3600 dtk |
+| `POST /auth/mfa/{enable,disable,recovery-codes}` | 10 / 300 dtk |
+| `POST /parent/link-request` | 12 / 600 dtk |
+| lainnya | `RATE_LIMIT_GLOBAL_LIMIT` (300) / `RATE_LIMIT_GLOBAL_WINDOW` (60 dtk) |
+
+Aktif via `RATE_LIMIT_ENABLED` (**default `true`**). `main.ts` juga: HSTS eksplisit
+(`max-age=15552000; includeSubDomains; preload`), `Referrer-Policy: no-referrer`,
+`Cross-Origin-Resource-Policy: same-site`, `x-powered-by` dimatikan; **CORS menolak `*`**
+(gagal start di `production`, diabaikan + warning di dev).
+
+Self-review lengkap (6 poin checklist §4.3, temuan per-severity, status) di
+[`SECURITY-REVIEW.md`](SECURITY-REVIEW.md).
 
 ## Data Master admin (Fase 1.2)
 
@@ -432,12 +459,20 @@ Lihat `.env.example` untuk daftar lengkap.
 | `REPORT_STORAGE_DIR` | Direktori file export bila S3 tak dikonfigurasi (default `./storage/reports`) |
 | `REPORT_SIGNED_URL_TTL` | Umur signed URL unduhan (detik), default 3600 |
 | `REPORT_SIGNING_SECRET` | Rahasia HMAC penanda-tangan URL unduhan; kosong → pakai `JWT_ACCESS_SECRET` |
+| `MFA_ENFORCE_ADMIN` | `true` (default): admin tanpa MFA diblok `MfaGuard`. Dev box ini `false` |
+| `MFA_ISSUER` / `MFA_CHALLENGE_TTL` | Nama di authenticator / umur token tantangan (detik) |
+| `RATE_LIMIT_ENABLED` | `true` (default). Dev box ini `false` agar smoke regresi tak kena 429 |
+| `RATE_LIMIT_GLOBAL_LIMIT` / `RATE_LIMIT_GLOBAL_WINDOW` | Batas global per-IP (default 300 / 60 dtk) |
 
 ## Catatan / utang teknis
 
-- `npm audit` melaporkan 3 high (rantai `prisma` → `@prisma/config` → `deepmerge-ts`).
-  Hanya menyentuh **Prisma CLI** (devDependency), bukan runtime. Ditangani di Fase 4.3
-  bersama dependency scan menyeluruh, atau saat Prisma merilis patch.
+- **`npm audit` (per Fase 4.3):** 10 (7 moderate, 3 high) — **semua transitive, tidak eksploitabel
+  di jalur runtime**. HIGH `deepmerge-ts` hanya di **Prisma CLI** (devDep); MOD `uuid` butuh arg
+  `buf` yang tak dipakai; MOD `@google-cloud/storage` via `firebase-admin` yang lazy-loaded &
+  tak dipakai (FCM messaging saja). Analisis lengkap + status "Accepted" di
+  [`SECURITY-REVIEW.md`](SECURITY-REVIEW.md) §4. Fix menunggu Prisma 7 / patch firebase-admin.
+- **Dev box:** `.env` set `MFA_ENFORCE_ADMIN=false` & `RATE_LIMIT_ENABLED=false` agar 12 smoke
+  regresi (banyak login berturut) tetap deterministik. **Produksi wajib `true`** (default `.env.example`).
 - Peringatan `package.json#prisma` deprecated — akan dipindah ke `prisma.config.ts`
   saat upgrade ke Prisma 7.
 
@@ -555,3 +590,12 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Endpoint MFA khusus `ADMIN`/`ADMIN_SUPER` (PEMBINA → 403) — **e2e**
 - [x] Migration `add_mfa` + `down.sql` terverifikasi (drop bersih → re-apply bersih)
 - [x] **153 unit test** hijau (+17 dari 4.2); dep baru `otplib`; e2e `mfa-smoke` 21/21 (dgn enforcement)
+
+### Fase 4.3 (backend)
+- [x] Tidak ada endpoint bocor data siswa tanpa validasi relasi — `/parent/child-progress/:id` 403 di semua kasus (relasi anak lain / tanpa relasi / id acak); coach lintas-ekskul 403 — **e2e `security-smoke` §1–2**
+- [x] Rate limiting aktif di `/auth/login` (+ login/mfa, register, refresh, mfa/*, link-request) — `RateLimitGuard` Redis, 429 `RATE_LIMITED` + `Retry-After` — **unit (6) + e2e §6 (dgn `RATE_LIMIT_ENABLED=true`)**
+- [x] Tidak ada rahasia (password/token/PII) di log/console — audit `grep` seluruh `src`; token push di-log dipangkas 6 char; `/auth/me` & CRUD tanpa `password_hash`/`mfa_secret` — **e2e §5**
+- [x] `npm audit` dijalankan & di-triase — 10 temuan, **0 eksploitabel di runtime**, semua "Accepted" dengan analisis di `SECURITY-REVIEW.md` §4
+- [x] HTTPS-only + **HSTS** aktif (`max-age=15552000; includeSubDomains; preload`), `x-powered-by` mati, `Referrer-Policy: no-referrer` — **e2e §3**
+- [x] CORS hanya origin resmi — wildcard `*` ditolak (gagal start di prod); origin asing tidak di-echo — **e2e §4**
+- [x] **`SECURITY-REVIEW.md`** ditulis sebagai baseline pentest; **159 unit test** hijau (+6 dari 4.3)

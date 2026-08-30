@@ -40,9 +40,9 @@ export class LoggingPushSender implements PushSender {
 
   async send(token: string, message: PushMessage): Promise<PushSendResult> {
     if (this.failMarkers.some((m) => token.includes(m))) {
-      throw new Error(`Simulasi kegagalan push untuk token ${token.slice(0, 12)}…`);
+      throw new Error(`Simulasi kegagalan push untuk token ${token.slice(0, 6)}…`);
     }
-    this.logger.log(`(dev) push → ${token.slice(0, 12)}… : ${message.title}`);
+    this.logger.log(`(dev) push → ${token.slice(0, 6)}… : ${message.title}`);
     return { ok: true };
   }
 }

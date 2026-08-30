@@ -59,6 +59,14 @@ export default () => ({
     challengeTtlSeconds: parseInt(process.env.MFA_CHALLENGE_TTL ?? '300', 10),
   },
 
+  rateLimit: {
+    // Rate limiting berbasis Redis (Fase 4.3). Nonaktifkan hanya untuk debugging.
+    enabled: (process.env.RATE_LIMIT_ENABLED ?? 'true').toLowerCase() !== 'false',
+    // Batas global longgar per-IP untuk semua route tanpa @RateLimit khusus.
+    globalLimit: parseInt(process.env.RATE_LIMIT_GLOBAL_LIMIT ?? '300', 10),
+    globalWindowSeconds: parseInt(process.env.RATE_LIMIT_GLOBAL_WINDOW ?? '60', 10),
+  },
+
   cors: {
     // daftar origin dipisah koma, mis. "https://admin.ekskul-sd.sch.id,http://localhost:5173"
     allowedOrigins: (process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:5173')

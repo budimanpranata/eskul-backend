@@ -6,6 +6,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MfaService } from './mfa.service.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
 
+// Hash argon2 di-stub agar unit test cepat & deterministik (bukan menguji argon2).
+vi.mock('argon2', () => ({
+  argon2id: 2,
+  hash: vi.fn(async (s: string) => `h:${s}`),
+  verify: vi.fn(async (hash: string, s: string) => hash === `h:${s}`),
+}));
+
 const cfg = (over: Record<string, unknown> = {}): ConfigService =>
   ({
     get: (k: string) =>
