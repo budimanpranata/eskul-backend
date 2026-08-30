@@ -7,22 +7,24 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 4.3 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 + 4.1 Audit Log +
-> 4.2 MFA (TOTP) + **4.3 Security Review** — rate limiting Redis (`RateLimitGuard`),
-> helmet/HSTS di-hardening, CORS wildcard ditolak, `SECURITY-REVIEW.md` (0 Critical/High wajib).
+> **Status: Fase 4.4 selesai — seluruh rencana (0.1–4.4) tuntas.** 0.1–1.5 (MVP) +
+> 2.1–2.4 + 3.1–3.3 + 4.1 Audit + 4.2 MFA + 4.3 Security Review + **4.4 Optimasi Performa**
+> — N+1 child-progress dihapus, cache Redis katalog ekskul, index inbox, load test
+> (`PERFORMANCE.md`), evaluasi multi-tenant (`MULTI-TENANT.md`).
 
 ## Struktur folder
 
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # 16 model (13 dari DDL §3.2 + device_tokens 1.5 + report_exports 3.1 + mfa_recovery_codes 4.2)
+│   ├── schema.prisma        # 16 model (13 DDL §3.2 + device_tokens 1.5 + report_exports 3.1 + mfa_recovery_codes 4.2)
 │   ├── migrations/
 │   │   ├── 20260828233836_init/        # DDL lengkap (+ pgcrypto + 4 CHECK) + down.sql
 │   │   ├── 20260829063133_add_device_tokens/  # tabel device_tokens (FCM) + down.sql
 │   │   ├── 20260829123518_add_report_exports/ # tabel report_exports (job export) + down.sql
 │   │   ├── 20260829230003_add_audit_log_indexes/ # idx created_at/action + GIN trgm metadata + down.sql
 │   │   ├── 20260829234941_add_mfa/     # users.mfa_secret/enabled_at/last_counter + mfa_recovery_codes + down.sql
+│   │   ├── 20260830015410_add_notif_inbox_index/ # idx_notif_user_sent (user_id, sent_at DESC) + down.sql
 │   │   └── migration_lock.toml
 │   └── seed.ts              # roles (ADMIN_SUPER/ADMIN/PEMBINA/ORANGTUA) + 2 admin dummy (idempoten)
 ├── src/
@@ -54,11 +56,14 @@ backend/
 │   │       ├── period.ts        # window & key mingguan/bulanan + classifyTrend (pure)
 │   │       ├── *.service.ts     # @Cron + run-guard Redis + enqueue fan-out
 │   │       └── *.processor.ts   # fan-out → batch ber-delay → enqueueUserNotification per wali
+│   ├── common/cache/       # RedisCacheService — read-through cache (Fase 4.4)
 │   ├── app.module.ts
 │   └── main.ts             # global prefix /api/v1, helmet+HSTS (4.3), CORS (tolak *), ValidationPipe
 ├── Dockerfile
 ├── docker-compose.yml      # postgres + redis + api
 ├── SECURITY-REVIEW.md      # self-review keamanan Fase 4.3 (baseline pentest)
+├── PERFORMANCE.md          # load test + N+1 + index + cache (Fase 4.4)
+├── MULTI-TENANT.md         # evaluasi & rencana migrasi multi-sekolah (Fase 4.4)
 └── .env.example
 ```
 
@@ -222,6 +227,23 @@ Aktif via `RATE_LIMIT_ENABLED` (**default `true`**). `main.ts` juga: HSTS ekspli
 
 Self-review lengkap (6 poin checklist §4.3, temuan per-severity, status) di
 [`SECURITY-REVIEW.md`](SECURITY-REVIEW.md).
+
+## Optimasi performa (Fase 4.4)
+
+- **N+1 dihapus**: `GET /parent/child-progress/:id` dulu 1 query `attendanceDetail.findMany`
+  **per ekskul** anak → sekarang **1 query** `session.extracurricularId IN [...]` + group di memori.
+- **Cache Redis** (`RedisCacheService`, `common/cache/`, global via `RedisModule` —
+  `getOrSet(key, ttl, producer)` read-through, **fail-safe**): `GET /admin/extracurriculars/catalog`
+  → `activeCatalog()` cache `cache:ekskul:catalog:v1` TTL 1 jam, **bust** pada setiap
+  create/update/deactivate/reactivate ekskul.
+- **Index**: `EXPLAIN` review → hanya `idx_notif_user_sent (user_id, sent_at DESC)` yang
+  bermanfaat (inbox tanpa sort); 2 kandidat lain ditolak karena redundan dengan index UNIQUE
+  yang sudah ada. Migration `20260830015410_add_notif_inbox_index` + `down.sql`.
+- **Load test** (`scratchpad/loadtest.mjs`): write p95 **< 800 ms** di semua beban uji;
+  read p95 **< 500 ms** pada concurrency realistis per-instance. Detail + caveat hardware
+  dev di [`PERFORMANCE.md`](PERFORMANCE.md).
+- **Multi-tenant**: dievaluasi (shared-DB + `school_id` + filter otomatis) + rencana migrasi
+  bertahap di [`MULTI-TENANT.md`](MULTI-TENANT.md); implementasi ditunda (requirement aktif single-tenant).
 
 ## Data Master admin (Fase 1.2)
 
@@ -599,3 +621,11 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] HTTPS-only + **HSTS** aktif (`max-age=15552000; includeSubDomains; preload`), `x-powered-by` mati, `Referrer-Policy: no-referrer` — **e2e §3**
 - [x] CORS hanya origin resmi — wildcard `*` ditolak (gagal start di prod); origin asing tidak di-echo — **e2e §4**
 - [x] **`SECURITY-REVIEW.md`** ditulis sebagai baseline pentest; **159 unit test** hijau (+6 dari 4.3)
+
+### Fase 4.4 (backend)
+- [x] p95 memenuhi NFR di bawah beban simulasi — **write < 800 ms di semua concurrency uji (10/25/50)**; read < 500 ms pada concurrency realistis per-instance — **load test `loadtest.mjs`** (detail + caveat hardware dev di `PERFORMANCE.md`)
+- [x] Tidak ada N+1 pada endpoint dashboard/laporan — `child-progress` diperbaiki (N query → 1); analitik/laporan/berkala sudah batched (audit di `PERFORMANCE.md` §2) — **e2e `perf-smoke` korektness 3-ekskul**
+- [x] Cache Redis untuk data jarang berubah — katalog ekskul aktif (`RedisCacheService`, TTL 1 jam, bust pada mutasi) — **unit (5) + e2e `perf-smoke` (cache hit + bust create/update/deactivate)**
+- [x] Index review via `EXPLAIN` — `idx_notif_user_sent` dibuat; 2 kandidat ditolak (redundan). Migration + `down.sql` diverifikasi
+- [x] Multi-tenant dievaluasi (`MULTI-TENANT.md`: shared-DB + `school_id` + Prisma extension, rencana migrasi bertahap); implementasi ditunda (kondisional — requirement aktif single-tenant)
+- [x] **164 unit test** hijau (+5 dari 4.4)

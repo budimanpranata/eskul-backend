@@ -246,6 +246,8 @@ model AttendanceSession {
   @@unique([extracurricularId, sessionDate, coachId])
   @@index([sessionDate], map: "idx_sessions_date")
   @@index([coachId], map: "idx_sessions_coach")
+  // Catatan: filter `(extracurricular_id, session_date)` (child-progress/analitik/laporan)
+  // sudah dilayani prefix index UNIQUE `(extracurricular_id, session_date, coach_id)`.
   @@map("attendance_sessions")
 }
 
@@ -285,6 +287,8 @@ model Notification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([userId, isRead], map: "idx_notif_user")
+  // Inbox: filter user + urut terbaru (Fase 4.4).
+  @@index([userId, sentAt(sort: Desc)], map: "idx_notif_user_sent")
   @@map("notifications")
 }
 

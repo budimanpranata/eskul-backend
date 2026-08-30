@@ -42,6 +42,12 @@ export class ExtracurricularsController {
     return this.ekskul.list(query);
   }
 
+  /** Daftar ringkas ekskul aktif — di-cache Redis (Fase 4.4). Untuk dropdown filter. */
+  @Get('catalog')
+  catalog() {
+    return this.ekskul.activeCatalog();
+  }
+
   @Get(':id')
   getOne(@Param('id', ParseUUIDPipe) id: string) {
     return this.ekskul.getById(id);

@@ -8,6 +8,7 @@ import type { Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { RedisCacheService } from '../../common/cache/redis-cache.service.js';
 import { buildPageMeta, pageSkip, type PaginatedResult } from '../../common/dto/pagination.dto.js';
 import {
   formatTimeOfDay,
@@ -31,14 +32,50 @@ interface Actor {
 
 const DAY_LABELS = ['', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
 
+/** Katalog ekskul aktif — jarang berubah, sering dibaca (filter laporan, analitik, mobile). */
+const CATALOG_CACHE_KEY = 'cache:ekskul:catalog:v1';
+const CATALOG_TTL_SECONDS = 60 * 60;
+
 @Injectable()
 export class ExtracurricularsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly cache: RedisCacheService,
   ) {}
 
   // ============ EKSKUL ============
+
+  /**
+   * Daftar ringkas ekstrakurikuler **aktif** (Fase 4.4). Di-cache Redis 1 jam,
+   * di-*bust* pada setiap mutasi ekskul. Dipakai dropdown filter & agregasi.
+   */
+  async activeCatalog(): Promise<
+    { id: string; name: string; category: string | null; defaultCoachName: string | null }[]
+  > {
+    return this.cache.getOrSet(CATALOG_CACHE_KEY, CATALOG_TTL_SECONDS, async () => {
+      const rows = await this.prisma.extracurricular.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          name: true,
+          category: true,
+          defaultCoach: { select: { user: { select: { fullName: true } } } },
+        },
+        orderBy: { name: 'asc' },
+      });
+      return rows.map((r) => ({
+        id: r.id,
+        name: r.name,
+        category: r.category,
+        defaultCoachName: r.defaultCoach?.user.fullName ?? null,
+      }));
+    });
+  }
+
+  private bustCatalog(): Promise<void> {
+    return this.cache.bust(CATALOG_CACHE_KEY);
+  }
 
   async list(query: ListExtracurricularsQueryDto): Promise<PaginatedResult<unknown>> {
     const where: Prisma.ExtracurricularWhereInput = {};
@@ -129,6 +166,7 @@ export class ExtracurricularsService {
       ipAddress: actor.ip,
       metadata: { name: row.name },
     });
+    await this.bustCatalog();
     return this.getById(row.id);
   }
 
@@ -153,6 +191,7 @@ export class ExtracurricularsService {
       ipAddress: actor.ip,
       metadata: { fields: definedKeys(dto as Record<string, unknown>) },
     });
+    await this.bustCatalog();
     return this.getById(id);
   }
 
@@ -166,6 +205,7 @@ export class ExtracurricularsService {
       entityId: id,
       ipAddress: actor.ip,
     });
+    await this.bustCatalog();
     return this.getById(id);
   }
 
@@ -179,6 +219,7 @@ export class ExtracurricularsService {
       entityId: id,
       ipAddress: actor.ip,
     });
+    await this.bustCatalog();
     return this.getById(id);
   }
 

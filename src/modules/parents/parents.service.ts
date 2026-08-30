@@ -166,29 +166,42 @@ export class ParentsService {
       include: { extracurricular: { select: { id: true, name: true } } },
       orderBy: { extracurricular: { name: 'asc' } },
     });
+    const ekskulIds = memberships.map((m) => m.extracurricularId);
 
-    const extracurriculars = [];
-    for (const m of memberships) {
-      const details = await this.prisma.attendanceDetail.findMany({
-        where: {
-          studentId,
-          session: {
-            extracurricularId: m.extracurricularId,
-            status: { in: ['SUBMITTED', 'SYNCED'] },
-            sessionDate: { gte: fromDate, lte: toDate },
-          },
-        },
-        include: {
-          session: {
-            select: {
-              sessionDate: true,
-              materialDescription: true,
-              coach: { select: { user: { select: { fullName: true } } } },
+    // Satu query untuk SEMUA ekskul anak (hindari N+1 — Fase 4.4), lalu group di memori.
+    const allDetails = ekskulIds.length
+      ? await this.prisma.attendanceDetail.findMany({
+          where: {
+            studentId,
+            session: {
+              extracurricularId: { in: ekskulIds },
+              status: { in: ['SUBMITTED', 'SYNCED'] },
+              sessionDate: { gte: fromDate, lte: toDate },
             },
           },
-        },
-        orderBy: { session: { sessionDate: 'asc' } },
-      });
+          include: {
+            session: {
+              select: {
+                extracurricularId: true,
+                sessionDate: true,
+                materialDescription: true,
+                coach: { select: { user: { select: { fullName: true } } } },
+              },
+            },
+          },
+          orderBy: { session: { sessionDate: 'asc' } },
+        })
+      : [];
+
+    const detailsByEkskul = new Map<string, typeof allDetails>();
+    for (const d of allDetails) {
+      const list = detailsByEkskul.get(d.session.extracurricularId) ?? [];
+      list.push(d);
+      detailsByEkskul.set(d.session.extracurricularId, list);
+    }
+
+    const extracurriculars = memberships.map((m) => {
+      const details = detailsByEkskul.get(m.extracurricularId) ?? [];
 
       const counts = { hadir: 0, izin: 0, sakit: 0, alpa: 0 };
       for (const d of details) counts[statusKey(d.status as StatusCode)] += 1;
@@ -212,7 +225,7 @@ export class ParentsService {
           coach_feedback: d.skillNotes ?? null,
         }));
 
-      extracurriculars.push({
+      return {
         id: m.extracurricular.id,
         name: m.extracurricular.name,
         attendance_summary: {
@@ -225,8 +238,8 @@ export class ParentsService {
         },
         activeness_trend: activenessTrend,
         materials_timeline: materialsTimeline,
-      });
-    }
+      };
+    });
 
     const notif = await this.prisma.notification.findFirst({
       where: { userId: actor.userId },
