@@ -3,9 +3,10 @@ import * as argon2 from 'argon2';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
-import type { RoleCode } from '../../common/types/authenticated-user.js';
+import { isAdminRole, type RoleCode } from '../../common/types/authenticated-user.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { RegisterParentDto } from './dto/register-parent.dto.js';
+import { MfaService } from './mfa.service.js';
 import { TokenService } from './token.service.js';
 
 /** Pesan generik — tidak membocorkan apakah identifier atau password yang salah. */
@@ -17,6 +18,15 @@ export interface AuthResult {
   tokenType: 'Bearer';
   expiresIn: number;
   user: { id: string; fullName: string; role: RoleCode };
+  /** true → admin ini wajib menyelesaikan setup MFA sebelum mengakses fitur lain. */
+  mfaSetupRequired?: boolean;
+}
+
+/** Respons langkah-1 login ketika akun sudah mengaktifkan MFA. */
+export interface MfaChallengeResult {
+  mfaRequired: true;
+  mfaToken: string;
+  expiresIn: number;
 }
 
 @Injectable()
@@ -25,9 +35,10 @@ export class AuthService {
     private readonly prisma: PrismaService,
     private readonly tokens: TokenService,
     private readonly audit: AuditService,
+    private readonly mfa: MfaService,
   ) {}
 
-  async login(dto: LoginDto, ip: string | null): Promise<AuthResult> {
+  async login(dto: LoginDto, ip: string | null): Promise<AuthResult | MfaChallengeResult> {
     const user = await this.prisma.user.findFirst({
       where: { OR: [{ email: dto.identifier }, { phoneNumber: dto.identifier }] },
       include: { role: true },
@@ -70,7 +81,25 @@ export class AuthService {
     }
 
     const role = user.role.code as RoleCode;
-    const issued = await this.tokens.issueTokens(user.id, role);
+
+    // Langkah 2FA: bila akun sudah mengaktifkan MFA → belum terbitkan sesi,
+    // kembalikan token tantangan yang harus ditukar dengan kode TOTP.
+    if (user.mfaEnabled) {
+      const challenge = await this.tokens.issueMfaChallenge(user.id);
+      await this.audit.log({
+        userId: user.id,
+        action: 'LOGIN_MFA_CHALLENGE',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: ip,
+        metadata: { role },
+      });
+      return { mfaRequired: true, mfaToken: challenge.token, expiresIn: challenge.expiresInSeconds };
+    }
+
+    // Admin tanpa MFA + enforcement menyala → sesi "pending" (akses dibatasi).
+    const mfaPending = this.mfa.mfaPendingFor(role, user.mfaEnabled);
+    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending });
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -83,7 +112,56 @@ export class AuthService {
       entityType: 'user',
       entityId: user.id,
       ipAddress: ip,
-      metadata: { role },
+      metadata: { role, mfaPending },
+    });
+
+    return {
+      accessToken: issued.accessToken,
+      refreshToken: issued.refreshToken,
+      tokenType: 'Bearer',
+      expiresIn: issued.expiresInSeconds,
+      user: { id: user.id, fullName: user.fullName, role },
+      ...(isAdminRole(role) && !user.mfaEnabled ? { mfaSetupRequired: true } : {}),
+    };
+  }
+
+  /** Langkah-2 login: tukar token tantangan + kode TOTP/recovery → sesi penuh. */
+  async completeMfaLogin(
+    mfaToken: string,
+    code: string,
+    ip: string | null,
+  ): Promise<AuthResult> {
+    const userId = await this.tokens.verifyMfaChallenge(mfaToken);
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { role: true },
+    });
+    if (!user || !user.isActive) throw new UnauthorizedException(GENERIC_LOGIN_ERROR);
+
+    let method: 'totp' | 'recovery';
+    try {
+      ({ method } = await this.mfa.verify(user.id, code));
+    } catch (err) {
+      await this.audit.log({
+        userId: user.id,
+        action: 'LOGIN_MFA_FAILED',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: ip,
+      });
+      throw err;
+    }
+
+    const role = user.role.code as RoleCode;
+    const issued = await this.tokens.issueTokens(user.id, role); // MFA lolos → sesi penuh
+    await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+    await this.audit.log({
+      userId: user.id,
+      action: 'LOGIN_MFA_SUCCESS',
+      entityType: 'user',
+      entityId: user.id,
+      ipAddress: ip,
+      metadata: { role, method },
     });
 
     return {
@@ -116,7 +194,9 @@ export class AuthService {
     // Rotasi: cabut sesi lama, terbitkan yang baru.
     await this.tokens.revokeSession(payload.sub, payload.jti);
     const role = user.role.code as RoleCode;
-    const issued = await this.tokens.issueTokens(user.id, role);
+    // Hitung ulang status pending: sekali MFA aktif, refresh berikutnya lepas flag.
+    const mfaPending = this.mfa.mfaPendingFor(role, user.mfaEnabled);
+    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending });
 
     await this.audit.log({
       userId: user.id,
@@ -132,7 +212,84 @@ export class AuthService {
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
       user: { id: user.id, fullName: user.fullName, role },
+      ...(isAdminRole(role) && !user.mfaEnabled ? { mfaSetupRequired: true } : {}),
     };
+  }
+
+  // ---------- MFA management (Fase 4.2) ----------
+
+  async beginMfaSetup(userId: string, ip: string | null) {
+    const res = await this.mfa.beginSetup(userId);
+    await this.audit.log({
+      userId,
+      action: 'MFA_SETUP_STARTED',
+      entityType: 'user',
+      entityId: userId,
+      ipAddress: ip,
+    });
+    return res;
+  }
+
+  /** Aktifkan MFA + terbitkan sesi PENUH baru (admin pending langsung lepas batas). */
+  async enableMfa(
+    userId: string,
+    code: string,
+    ip: string | null,
+  ): Promise<AuthResult & { recoveryCodes: string[] }> {
+    const { recoveryCodes } = await this.mfa.enable(userId, code);
+    const user = await this.prisma.user.findUniqueOrThrow({
+      where: { id: userId },
+      include: { role: true },
+    });
+    const role = user.role.code as RoleCode;
+    // Cabut sesi lama (yang mungkin ber-flag pending) lalu terbitkan yang bersih.
+    await this.tokens.revokeAllSessions(userId);
+    const issued = await this.tokens.issueTokens(userId, role);
+    await this.audit.log({
+      userId,
+      action: 'MFA_ENABLED',
+      entityType: 'user',
+      entityId: userId,
+      ipAddress: ip,
+      metadata: { role },
+    });
+    return {
+      accessToken: issued.accessToken,
+      refreshToken: issued.refreshToken,
+      tokenType: 'Bearer',
+      expiresIn: issued.expiresInSeconds,
+      user: { id: user.id, fullName: user.fullName, role },
+      recoveryCodes,
+    };
+  }
+
+  async disableMfa(userId: string, code: string, ip: string | null): Promise<{ disabled: true }> {
+    await this.mfa.disable(userId, code);
+    await this.tokens.revokeAllSessions(userId); // paksa login ulang (kembali via jalur normal)
+    await this.audit.log({
+      userId,
+      action: 'MFA_DISABLED',
+      entityType: 'user',
+      entityId: userId,
+      ipAddress: ip,
+    });
+    return { disabled: true };
+  }
+
+  async regenerateRecoveryCodes(userId: string, code: string, ip: string | null) {
+    const res = await this.mfa.regenerateRecoveryCodes(userId, code);
+    await this.audit.log({
+      userId,
+      action: 'MFA_RECOVERY_REGENERATED',
+      entityType: 'user',
+      entityId: userId,
+      ipAddress: ip,
+    });
+    return res;
+  }
+
+  mfaStatus(userId: string, role: RoleCode) {
+    return this.mfa.status(userId, role);
   }
 
   async logout(userId: string, ip: string | null): Promise<{ revokedSessions: number }> {

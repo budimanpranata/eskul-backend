@@ -52,7 +52,11 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Jenis token tidak sesuai.');
     }
 
-    const user: AuthenticatedUser = { id: payload.sub, role: payload.role };
+    const user: AuthenticatedUser = {
+      id: payload.sub,
+      role: payload.role,
+      mfaPending: payload.mfaPending === true,
+    };
     (request as Request & { user: AuthenticatedUser }).user = user;
     return true;
   }

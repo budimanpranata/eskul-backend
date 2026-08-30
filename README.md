@@ -7,22 +7,22 @@ Stack: **NestJS 12 (TypeScript, ESM) · PostgreSQL · Prisma · Redis (ioredis)*
 Referensi arsitektur: `../system-design-ekosistem-ekskul-sd.md`.
 Referensi rencana kerja: `../ai-prompts-rencana-pengerjaan.md`.
 
-> **Status: Fase 4.1 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 (Fase 3 lengkap) +
-> **4.1 Audit Log Lengkap** — `AuditInterceptor` global berbasis `@Audit(...)` mencatat
-> semua akses data siswa/ortu ke `audit_logs`; `GET /admin/audit-logs` (filter + free-text
-> JSONB) khusus role **`ADMIN_SUPER`**.
+> **Status: Fase 4.2 selesai.** 0.1–1.5 (MVP) + 2.1–2.4 + 3.1–3.3 + 4.1 Audit Log Lengkap +
+> **4.2 MFA (TOTP) untuk Admin** — login 2 langkah, `MfaGuard` global memblok admin
+> tanpa MFA, recovery codes sekali-pakai, anti-replay TOTP.
 
 ## Struktur folder
 
 ```
 backend/
 ├── prisma/
-│   ├── schema.prisma        # 15 model (13 dari DDL §3.2 + device_tokens Fase 1.5 + report_exports Fase 3.1)
+│   ├── schema.prisma        # 16 model (13 dari DDL §3.2 + device_tokens 1.5 + report_exports 3.1 + mfa_recovery_codes 4.2)
 │   ├── migrations/
 │   │   ├── 20260828233836_init/        # DDL lengkap (+ pgcrypto + 4 CHECK) + down.sql
 │   │   ├── 20260829063133_add_device_tokens/  # tabel device_tokens (FCM) + down.sql
 │   │   ├── 20260829123518_add_report_exports/ # tabel report_exports (job export) + down.sql
 │   │   ├── 20260829230003_add_audit_log_indexes/ # idx created_at/action + GIN trgm metadata + down.sql
+│   │   ├── 20260829234941_add_mfa/     # users.mfa_secret/enabled_at/last_counter + mfa_recovery_codes + down.sql
 │   │   └── migration_lock.toml
 │   └── seed.ts              # roles (ADMIN_SUPER/ADMIN/PEMBINA/ORANGTUA) + 2 admin dummy (idempoten)
 ├── src/
@@ -31,12 +31,12 @@ backend/
 │   ├── redis/                   # RedisModule + RedisService (global)
 │   ├── queue/                   # QueueModule — BullMQ di atas Redis (attempts:3, backoff exp) (Fase 1.5)
 │   ├── common/
-│   │   ├── decorators/         # @Public, @Roles, @CurrentUser, @Audit (Fase 4.1)
-│   │   ├── guards/             # JwtAuthGuard, RolesGuard (+ hierarki ADMIN_SUPER⊃ADMIN)
+│   │   ├── decorators/         # @Public, @Roles, @CurrentUser, @Audit (4.1), @MfaExempt (4.2)
+│   │   ├── guards/             # JwtAuthGuard, RolesGuard (hierarki ADMIN_SUPER⊃ADMIN), MfaGuard (4.2)
 │   │   ├── interceptors/       # AuditInterceptor global — tulis audit_logs dari @Audit (Fase 4.1)
-│   │   └── types/              # AuthenticatedUser, RoleCode, roleSatisfies, *TokenPayload
+│   │   └── types/              # AuthenticatedUser, RoleCode, roleSatisfies, isAdminRole, *TokenPayload
 │   ├── modules/
-│   │   ├── auth/            # ✅ login/refresh/logout/me + TokenService (JWT+Redis)  (Fase 1.1)
+│   │   ├── auth/            # ✅ login(2-langkah)/refresh/logout/me + TokenService + MfaService (TOTP)  (1.1/4.2)
 │   │   ├── audit/           # ✅ AuditService.log()/query()/facets() + GET /admin/audit-logs (ADMIN_SUPER)  (1.1/4.1)
 │   │   ├── users/           # akun users lintas-role
 │   │   ├── students/        # ✅ CRUD + soft-delete + qr_token + import Excel        (Fase 1.2)
@@ -131,7 +131,8 @@ Endpoint (`/api/v1`), sesuai dokumen desain bagian 4.3 & 7.1:
 
 | Method & Path | Akses | Fungsi |
 |---|---|---|
-| `POST /auth/login` | publik | email/no. HP + password → `{ accessToken, refreshToken, tokenType, expiresIn, user }` |
+| `POST /auth/login` | publik | password → sesi `{ accessToken, … }`; **atau** `{ mfaRequired:true, mfaToken }` bila akun sudah MFA; `mfaSetupRequired:true` bila admin belum MFA |
+| `POST /auth/login/mfa` | publik | `{ mfaToken, code }` (TOTP/recovery) → sesi penuh (Fase 4.2) |
 | `POST /auth/refresh` | publik | `{ refreshToken }` → pasangan token baru (**rotasi**: jti lama dicabut) |
 | `POST /auth/logout` | Bearer | cabut **semua** sesi refresh milik user |
 | `GET /auth/me` | Bearer | profil ringkas user login (tanpa `password_hash`) |
@@ -163,10 +164,37 @@ Dua guard **global** (terdaftar di `AuthModule` via `APP_GUARD`, urutan: auth �
 @Get('admin/students') ...
 ```
 
-Helper di `src/common/`: `@Public()`, `@Roles(...)`, `@CurrentUser()`, `@Audit(...)`, tipe
-`AuthenticatedUser` / `RoleCode`. Role: `ADMIN_SUPER` ⊃ `ADMIN` ⊃ … (`roleSatisfies()` di
-`RolesGuard` — `@Roles('ADMIN')` juga lolos untuk `ADMIN_SUPER`; `@Roles('ADMIN_SUPER')` tidak
-lolos untuk `ADMIN` biasa).
+Helper di `src/common/`: `@Public()`, `@Roles(...)`, `@CurrentUser()`, `@Audit(...)`,
+`@MfaExempt()`, tipe `AuthenticatedUser` / `RoleCode`. Role: `ADMIN_SUPER` ⊃ `ADMIN` ⊃ …
+(`roleSatisfies()` di `RolesGuard` — `@Roles('ADMIN')` juga lolos untuk `ADMIN_SUPER`;
+`@Roles('ADMIN_SUPER')` tidak lolos untuk `ADMIN` biasa).
+
+### MFA (TOTP) untuk Admin (Fase 4.2)
+
+Login jadi **2 langkah** untuk role `ADMIN` / `ADMIN_SUPER` yang sudah mengaktifkan MFA:
+`POST /auth/login` (password) → `{ mfaRequired, mfaToken }` (token tantangan JWT `mfa_challenge`,
+umur `MFA_CHALLENGE_TTL` = 5 mnt, **tidak** menerbitkan sesi) → `POST /auth/login/mfa`
+`{ mfaToken, code }` → sesi penuh. `code` = 6 digit TOTP **atau** kode pemulihan.
+
+| Endpoint (`@Roles('ADMIN','ADMIN_SUPER')`) | Fungsi |
+|---|---|
+| `GET /auth/mfa/status` | `{ enabled, enabledAt, pending, enforced, recoveryCodesRemaining }` |
+| `POST /auth/mfa/setup` | buat secret provisional → `{ secret, otpauthUrl }` (QR di-render klien) |
+| `POST /auth/mfa/enable` `{ code }` | verifikasi TOTP → `mfa_enabled=true` + **10 recovery codes** (plaintext sekali, hash argon2id disimpan) + **sesi penuh baru** |
+| `POST /auth/mfa/disable` `{ code }` | verifikasi → matikan MFA, hapus secret + recovery codes, cabut sesi |
+| `POST /auth/mfa/recovery-codes` `{ code }` | verifikasi → ganti seluruh recovery codes |
+
+- **Kebijakan enrolment** (`MFA_ENFORCE_ADMIN`, default `true`): admin tanpa MFA dapat sesi
+  ber-flag `mfaPending` di JWT. `MfaGuard` global (setelah RolesGuard) menolak **semua**
+  route kecuali `@MfaExempt()` (`/auth/mfa/*`, `/auth/me`, `/auth/logout`) → 403
+  `{ error:'MFA_SETUP_REQUIRED' }`. `enable` menerbitkan sesi bersih; `refresh` menghitung
+  ulang flag (sekali MFA aktif, refresh berikutnya lepas). *Di mesin dev ini `.env` set
+  `MFA_ENFORCE_ADMIN=false` agar smoke regresi lama tetap jalan; enforcement diuji unit + e2e (`=true`).*
+- **Anti-replay TOTP**: window ±1 step (otplib `checkDelta`, step 30 dtk). Step yang diterima
+  disimpan di `users.mfa_last_counter`; kode dengan step ≤ nilai itu ditolak → tak bisa direplay.
+- **Recovery code**: format `XXXXX-XXXXX` (alfabet tanpa 0/O/1/I). Dicocokkan ke hash argon2id
+  yang `used_at IS NULL`, lalu `updateMany({ id, usedAt:null })` (guard balapan) → sekali pakai.
+- Migration `20260829234941_add_mfa` (+ `down.sql`). Dep baru: `otplib`.
 
 ## Data Master admin (Fase 1.2)
 
@@ -517,3 +545,13 @@ Lihat `.env.example` untuk daftar lengkap.
 - [x] Halaman audit **read-only** + sub-permission — hanya `ADMIN_SUPER` (403 untuk `ADMIN` biasa), `POST /admin/audit-logs` → 404 — **unit (RolesGuard hierarki) + e2e**
 - [x] Migration indeks + `down.sql` terverifikasi (drop bersih → re-apply bersih)
 - [x] **136 unit test** hijau (+13 dari 4.1)
+
+### Fase 4.2 (backend)
+- [x] Admin baru tidak bisa mengakses data siswa sebelum MFA aktif — `MfaGuard` global, sesi `mfaPending` → 403 `MFA_SETUP_REQUIRED` di semua route non-`@MfaExempt` — **unit (MfaGuard) + e2e (`MFA_ENFORCE_ADMIN=true`: `/admin/students` → 403)**
+- [x] Recovery code hanya sekali pakai — hash argon2id, `updateMany({id, usedAt:null})` guard balapan — **unit + e2e (pakai ke-2 → 401, sisa berkurang)**
+- [x] Kode TOTP window 30 dtk (±1 step) & tidak bisa direplay — `mfa_last_counter` menolak step ≤ terakhir — **unit + e2e (kode TOTP sama dipakai 2× → 401)**
+- [x] Login 2 langkah: password → `mfaToken` (tanpa sesi) → `code` → sesi penuh; challenge token kedaluwarsa/ngawur → 401 — **e2e**
+- [x] `enable` menerbitkan 10 recovery codes (plaintext sekali) + sesi bersih; `disable`/`regenerate` butuh kode valid — **e2e**
+- [x] Endpoint MFA khusus `ADMIN`/`ADMIN_SUPER` (PEMBINA → 403) — **e2e**
+- [x] Migration `add_mfa` + `down.sql` terverifikasi (drop bersih → re-apply bersih)
+- [x] **153 unit test** hijau (+17 dari 4.2); dep baru `otplib`; e2e `mfa-smoke` 21/21 (dgn enforcement)

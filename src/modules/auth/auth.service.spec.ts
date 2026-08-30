@@ -71,11 +71,21 @@ describe('AuthService', () => {
       revokeAllSessions: vi.fn().mockResolvedValue(2),
     };
     audit = { log: vi.fn().mockResolvedValue(undefined) };
+    const mfa = {
+      mfaPendingFor: vi.fn().mockReturnValue(false),
+      verify: vi.fn(),
+      enable: vi.fn(),
+      disable: vi.fn(),
+      beginSetup: vi.fn(),
+      status: vi.fn(),
+      regenerateRecoveryCodes: vi.fn(),
+    };
 
     service = new AuthService(
       prisma as unknown as PrismaService,
       tokens as unknown as TokenService,
       audit as unknown as AuditService,
+      mfa as never,
     );
   });
 
@@ -96,7 +106,7 @@ describe('AuthService', () => {
         expiresIn: 900,
         user: { id: 'user-1', fullName: 'Budi Pembina', role: 'PEMBINA' },
       });
-      expect(tokens.issueTokens).toHaveBeenCalledWith('user-1', 'PEMBINA');
+      expect(tokens.issueTokens).toHaveBeenCalledWith('user-1', 'PEMBINA', { mfaPending: false });
       expect(prisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-1' },
         data: { lastLoginAt: expect.any(Date) },
@@ -165,7 +175,7 @@ describe('AuthService', () => {
       const result = await service.refresh('refresh.jwt', '10.0.0.9');
 
       expect(tokens.revokeSession).toHaveBeenCalledWith('user-1', 'jti-old');
-      expect(tokens.issueTokens).toHaveBeenCalledWith('user-1', 'PEMBINA');
+      expect(tokens.issueTokens).toHaveBeenCalledWith('user-1', 'PEMBINA', { mfaPending: false });
       expect(result.accessToken).toBe('access.jwt');
       expect(audit.log).toHaveBeenCalledWith(
         expect.objectContaining({ action: 'TOKEN_REFRESH', userId: 'user-1' }),

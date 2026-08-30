@@ -46,7 +46,7 @@ describe('JwtAuthGuard', () => {
     const { context, req } = ctx({ authorization: 'Bearer good.token' });
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect(req.user).toEqual({ id: 'user-9', role: 'ADMIN' });
+    expect(req.user).toEqual({ id: 'user-9', role: 'ADMIN', mfaPending: false });
   });
 
   it('tanpa header Authorization → UnauthorizedException', async () => {

@@ -11,11 +11,16 @@ export function roleSatisfies(userRole: RoleCode, required: RoleCode): boolean {
   return userRole === 'ADMIN_SUPER' && required === 'ADMIN';
 }
 
+export const ADMIN_ROLES: RoleCode[] = ['ADMIN', 'ADMIN_SUPER'];
+export const isAdminRole = (role: RoleCode): boolean => ADMIN_ROLES.includes(role);
+
 /** Payload di dalam JWT access token. */
 export interface AccessTokenPayload {
   sub: string; // user id (UUID)
   role: RoleCode;
   type: 'access';
+  /** true bila admin ini belum mengaktifkan MFA → akses dibatasi (Fase 4.2). */
+  mfaPending?: true;
 }
 
 /** Payload di dalam JWT refresh token. */
@@ -25,8 +30,16 @@ export interface RefreshTokenPayload {
   type: 'refresh';
 }
 
+/** Token tantangan sesaat antara langkah password & langkah TOTP (Fase 4.2). */
+export interface MfaChallengeTokenPayload {
+  sub: string; // user id (UUID)
+  type: 'mfa_challenge';
+}
+
 /** Objek user yang ditempel ke `request.user` setelah JwtAuthGuard lolos. */
 export interface AuthenticatedUser {
   id: string;
   role: RoleCode;
+  /** true → sesi ini hanya boleh mengakses endpoint setup MFA. */
+  mfaPending?: boolean;
 }

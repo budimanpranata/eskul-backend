@@ -49,6 +49,16 @@ export default () => ({
     credentialsPath: process.env.FCM_CREDENTIALS_PATH,
   },
 
+  mfa: {
+    // Bila true (default), akun ADMIN/ADMIN_SUPER yang belum mengaktifkan MFA
+    // hanya boleh mengakses endpoint setup MFA (kebijakan Fase 4.2).
+    enforceAdmin: (process.env.MFA_ENFORCE_ADMIN ?? 'true').toLowerCase() !== 'false',
+    // Nama issuer yang tampil di aplikasi authenticator.
+    issuer: process.env.MFA_ISSUER ?? 'Eskul SD',
+    // Umur token tantangan antara langkah password dan langkah TOTP (detik).
+    challengeTtlSeconds: parseInt(process.env.MFA_CHALLENGE_TTL ?? '300', 10),
+  },
+
   cors: {
     // daftar origin dipisah koma, mis. "https://admin.ekskul-sd.sch.id,http://localhost:5173"
     allowedOrigins: (process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:5173')

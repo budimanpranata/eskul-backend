@@ -3,9 +3,11 @@ import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard.js';
+import { MfaGuard } from '../../common/guards/mfa.guard.js';
 import { RolesGuard } from '../../common/guards/roles.guard.js';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { MfaService } from './mfa.service.js';
 import { TokenService } from './token.service.js';
 
 /**
@@ -20,9 +22,11 @@ import { TokenService } from './token.service.js';
   providers: [
     AuthService,
     TokenService,
+    MfaService,
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     { provide: APP_GUARD, useClass: RolesGuard },
+    { provide: APP_GUARD, useClass: MfaGuard },
   ],
-  exports: [AuthService, TokenService],
+  exports: [AuthService, TokenService, MfaService],
 })
 export class AuthModule {}

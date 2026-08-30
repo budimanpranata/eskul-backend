@@ -7,6 +7,7 @@ import { JwtService } from '@nestjs/jwt';
 import { RedisService } from '../../redis/redis.service.js';
 import type {
   AccessTokenPayload,
+  MfaChallengeTokenPayload,
   RefreshTokenPayload,
   RoleCode,
 } from '../../common/types/authenticated-user.js';
@@ -38,16 +39,20 @@ export class TokenService {
   ) {}
 
   /** Terbitkan pasangan access + refresh token baru, daftarkan sesi refresh ke Redis. */
-  async issueTokens(userId: string, role: RoleCode): Promise<IssuedTokens> {
+  async issueTokens(
+    userId: string,
+    role: RoleCode,
+    opts: { mfaPending?: boolean } = {},
+  ): Promise<IssuedTokens> {
     const jti = randomUUID();
 
-    const accessToken = await this.jwt.signAsync(
-      { sub: userId, role, type: 'access' } satisfies AccessTokenPayload,
-      {
-        secret: this.config.get<string>('jwt.accessSecret'),
-        expiresIn: TokenService.ACCESS_TTL_SECONDS,
-      },
-    );
+    const accessPayload: AccessTokenPayload = { sub: userId, role, type: 'access' };
+    if (opts.mfaPending) accessPayload.mfaPending = true;
+
+    const accessToken = await this.jwt.signAsync(accessPayload, {
+      secret: this.config.get<string>('jwt.accessSecret'),
+      expiresIn: TokenService.ACCESS_TTL_SECONDS,
+    });
 
     const refreshTtlSeconds = this.refreshTtlSeconds();
     const refreshToken = await this.jwt.signAsync(
@@ -63,6 +68,33 @@ export class TokenService {
     await this.redis.client.expire(this.indexKey(userId), refreshTtlSeconds);
 
     return { accessToken, refreshToken, expiresInSeconds: TokenService.ACCESS_TTL_SECONDS };
+  }
+
+  // ---------- MFA challenge (Fase 4.2) ----------
+
+  /** Token sesaat yang membuktikan langkah password lolos; ditukar dengan kode TOTP. */
+  async issueMfaChallenge(userId: string): Promise<{ token: string; expiresInSeconds: number }> {
+    const expiresInSeconds = this.config.get<number>('mfa.challengeTtlSeconds') ?? 300;
+    const token = await this.jwt.signAsync(
+      { sub: userId, type: 'mfa_challenge' } satisfies MfaChallengeTokenPayload,
+      { secret: this.config.get<string>('jwt.accessSecret'), expiresIn: expiresInSeconds },
+    );
+    return { token, expiresInSeconds };
+  }
+
+  async verifyMfaChallenge(token: string): Promise<string> {
+    let payload: MfaChallengeTokenPayload;
+    try {
+      payload = await this.jwt.verifyAsync<MfaChallengeTokenPayload>(token, {
+        secret: this.config.get<string>('jwt.accessSecret'),
+      });
+    } catch {
+      throw new UnauthorizedException('Sesi verifikasi MFA tidak valid atau kedaluwarsa.');
+    }
+    if (payload.type !== 'mfa_challenge') {
+      throw new UnauthorizedException('Jenis token tidak sesuai.');
+    }
+    return payload.sub;
   }
 
   /** Verifikasi tanda tangan + tipe refresh token. Tidak menyentuh Redis. */
