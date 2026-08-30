@@ -269,6 +269,7 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 
 | Path | Fungsi |
 |---|---|
+| `GET /coach/summary` | Angka ringkas dashboard Pembina → `{ date, dayLabel, totalStudents, totalExtracurriculars, weeklySchedules, todaySessionCount, pendingSubmitToday }`. `totalStudents` = siswa aktif unik di semua ekskul yang diampu; `pendingSubmitToday` = sesi hari ini yang belum disubmit (≥ 0). Tidak diaudit (agregat milik sendiri) |
 | `GET /coach/today-sessions` | Jadwal ekskul hari ini (zona Asia/Jakarta) milik pembina login + status sesi bila sudah disubmit hari itu |
 | `GET /coach/extracurriculars/:id/roster` | Siswa aktif untuk presensi (403 bila bukan pembina ekskul tsb) |
 | `GET /coach/sessions?limit=` | Riwayat sesi pembina + ringkasan per status + `avgActiveness` (rata-rata keaktifan HADIR, Fase 2.3) |
@@ -450,7 +451,7 @@ free-text trigram 937 ms, facets 84 ms (semua < 3 dtk — DoD).
 | `GET /admin/analytics/overview` | `VIEW_ANALYTICS_OVERVIEW` | `@Audit` interceptor |
 | CRUD siswa/pembina/anggota, submit presensi, QR scan/rotasi, register/approve relasi ortu, run laporan berkala | `CREATE_*`/`UPDATE_*`/`ENROLL_*`/`SUBMIT_ATTENDANCE`/`QR_SCAN`/`ROTATE_QR_TOKEN`/`APPROVE_PARENT_RELATION`/… | service-level `audit.log()` (sudah 100% sejak Fase 1.2–3.3) |
 | Auth | `LOGIN_SUCCESS/FAILED`, `LOGOUT`, `TOKEN_REFRESH` | service (Fase 1.1) |
-| **Tidak diaudit (bukan data personal):** `GET /coach/today-sessions` & `/coach/sessions` (jadwal/agregat milik sendiri), `GET /admin/extracurriculars` & `/:id` (metadata ekskul), `GET /admin/reports/exports*` (status job), `GET /notifications/*` (inbox sendiri), `GET /auth/me` | — | — |
+| **Tidak diaudit (bukan data personal):** `GET /coach/summary`, `GET /coach/today-sessions` & `/coach/sessions` (jadwal/agregat milik sendiri), `GET /admin/extracurriculars` & `/:id` (metadata ekskul), `GET /admin/reports/exports*` (status job), `GET /notifications/*` (inbox sendiri), `GET /auth/me` | — | — |
 
 ## Skrip npm
 

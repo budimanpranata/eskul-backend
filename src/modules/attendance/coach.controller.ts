@@ -25,6 +25,11 @@ import { QrScanDto } from './dto/qr-scan.dto.js';
 export class CoachController {
   constructor(private readonly attendance: AttendanceService) {}
 
+  @Get('summary')
+  summary(@CurrentUser() user: AuthenticatedUser) {
+    return this.attendance.summary(user.id);
+  }
+
   @Get('today-sessions')
   today(@CurrentUser() user: AuthenticatedUser) {
     return this.attendance.todaySessions(user.id);

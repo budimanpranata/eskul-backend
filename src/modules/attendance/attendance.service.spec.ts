@@ -189,6 +189,44 @@ describe('AttendanceService.submit', () => {
       );
     });
   });
+
+  describe('summary', () => {
+    beforeEach(() => {
+      prisma.extracurricular.count = vi.fn().mockResolvedValue(3);
+      prisma.extracurricularSchedule = {
+        ...prisma.extracurricularSchedule,
+        count: vi.fn().mockResolvedValue(5),
+        findMany: vi.fn().mockResolvedValue([{ extracurricularId: 'e1' }, { extracurricularId: 'e2' }]),
+      };
+      prisma.attendanceSession.count = vi.fn().mockResolvedValue(1);
+      prisma.extracurricularMember.findMany.mockResolvedValue([
+        { studentId: 'a' }, { studentId: 'b' }, { studentId: 'c' }, { studentId: 'd' },
+      ]);
+    });
+
+    it('menghitung total siswa unik, jumlah ekskul, jadwal mingguan & hari ini', async () => {
+      const res = await service.summary('u1');
+      expect(res).toMatchObject({
+        totalStudents: 4,
+        totalExtracurriculars: 3,
+        weeklySchedules: 5,
+        todaySessionCount: 2,
+        pendingSubmitToday: 1, // 2 jadwal hari ini - 1 sudah disubmit
+      });
+      // distinct siswa aktif pada ekskul milik pembina ini
+      const memberWhere = prisma.extracurricularMember.findMany.mock.calls[0][0];
+      expect(memberWhere).toMatchObject({
+        where: { student: { isActive: true }, extracurricular: { isActive: true, defaultCoachId: 'coach-1' } },
+        distinct: ['studentId'],
+      });
+    });
+
+    it('pendingSubmitToday tidak negatif bila semua sudah disubmit', async () => {
+      prisma.attendanceSession.count.mockResolvedValue(9);
+      const res = await service.summary('u1');
+      expect(res.pendingSubmitToday).toBe(0);
+    });
+  });
 });
 
 function isoToday(): string {

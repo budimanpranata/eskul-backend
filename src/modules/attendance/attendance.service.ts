@@ -30,6 +30,49 @@ export class AttendanceService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  /** GET /coach/summary — angka ringkas untuk dashboard Pembina. */
+  async summary(userId: string) {
+    const coach = await this.getCoachOrThrow(userId);
+    const todayStr = jakartaToday();
+    const dow = isoDayOfWeek(todayStr);
+    const sessionDate = new Date(`${todayStr}T00:00:00.000Z`);
+    const ekskulWhere = { isActive: true, defaultCoachId: coach.id };
+
+    const [distinctStudents, extracurriculars, weeklySchedules, todaySchedules] = await Promise.all([
+      this.prisma.extracurricularMember.findMany({
+        where: { student: { isActive: true }, extracurricular: ekskulWhere },
+        select: { studentId: true },
+        distinct: ['studentId'],
+      }),
+      this.prisma.extracurricular.count({ where: ekskulWhere }),
+      this.prisma.extracurricularSchedule.count({
+        where: { isActive: true, extracurricular: ekskulWhere },
+      }),
+      this.prisma.extracurricularSchedule.findMany({
+        where: { isActive: true, dayOfWeek: dow, extracurricular: ekskulWhere },
+        select: { extracurricularId: true },
+      }),
+    ]);
+
+    const submittedToday = await this.prisma.attendanceSession.count({
+      where: {
+        coachId: coach.id,
+        sessionDate,
+        extracurricularId: { in: todaySchedules.map((s) => s.extracurricularId) },
+      },
+    });
+
+    return {
+      date: todayStr,
+      dayLabel: DAY_LABELS[dow],
+      totalStudents: distinctStudents.length,
+      totalExtracurriculars: extracurriculars,
+      weeklySchedules,
+      todaySessionCount: todaySchedules.length,
+      pendingSubmitToday: Math.max(0, todaySchedules.length - submittedToday),
+    };
+  }
+
   /** GET /coach/today-sessions — jadwal ekskul hari ini milik pembina login. */
   async todaySessions(userId: string) {
     const coach = await this.getCoachOrThrow(userId);
