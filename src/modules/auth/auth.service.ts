@@ -3,7 +3,7 @@ import * as argon2 from 'argon2';
 
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
-import { isAdminRole, type RoleCode } from '../../common/types/authenticated-user.js';
+import { type RoleCode } from '../../common/types/authenticated-user.js';
 import type { LoginDto } from './dto/login.dto.js';
 import type { RegisterParentDto } from './dto/register-parent.dto.js';
 import { MfaService } from './mfa.service.js';
@@ -121,7 +121,10 @@ export class AuthService {
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
       user: { id: user.id, fullName: user.fullName, role },
-      ...(isAdminRole(role) && !user.mfaEnabled ? { mfaSetupRequired: true } : {}),
+      // Hanya "wajib" bila enforcement menyala (mfaPending sudah mencakup
+      // isEnforced && admin && !mfaEnabled). Bila MFA_ENFORCE_ADMIN=false,
+      // admin tetap bisa mengaktifkan MFA manual lewat halaman Keamanan.
+      ...(mfaPending ? { mfaSetupRequired: true } : {}),
     };
   }
 
@@ -212,7 +215,7 @@ export class AuthService {
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
       user: { id: user.id, fullName: user.fullName, role },
-      ...(isAdminRole(role) && !user.mfaEnabled ? { mfaSetupRequired: true } : {}),
+      ...(mfaPending ? { mfaSetupRequired: true } : {}),
     };
   }
 

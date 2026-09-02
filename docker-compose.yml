@@ -1,3 +1,7 @@
+# Nama project eksplisit — cegah bentrok namespace dengan project lain
+# yang folder-nya juga bernama "backend".
+name: eskul
+
 services:
   postgres:
     image: postgres:16-alpine
