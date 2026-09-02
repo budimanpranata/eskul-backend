@@ -111,7 +111,15 @@ Akun dummy hasil seed (dev only, idempoten):
 | `pembina@eskul.test` | `Pembina#12345` | PEMBINA — mengampu ekskul "Futsal (Dummy)" |
 | `ortu@eskul.test` | `Ortu#12345` | ORANGTUA — anak "Budi Siswa Contoh" (relasi APPROVED) |
 
-Fixture demo: ekskul **Futsal (Dummy)** + 2 siswa (Budi, Siti) + 2 jadwal + 1 sesi presensi tersubmit (Senin terakhir) → mode Pembina & Orang Tua langsung bisa dicoba.
+Fixture demo (`npm run db:seed`): ekskul **Futsal (Dummy)** + 2 siswa (Budi, Siti) + 2 jadwal + 1 sesi presensi tersubmit (Senin terakhir) → mode Pembina & Orang Tua langsung bisa dicoba.
+
+Dataset demo lebih lengkap — jalankan **setelah** `db:seed`:
+
+```bash
+npm run db:seed:demo   # 5 pembina + 7 ekskul + 18 siswa + 16 orang tua
+```
+
+Berisi relasi ortu–siswa **12 APPROVED / 3 PENDING / 1 REJECTED** (untuk mencoba menu *Relasi Orang Tua*), keanggotaan ekskul, dan 9 sesi presensi tersubmit dengan nilai keaktifan. Login: pembina `<nama>@pembina.eskul.test` / `Pembina#2026`, ortu `ortu.<nama.anak>@ortu.eskul.test` / `Ortu#2026`. Idempoten.
 
 > **Bentrok port?** Bila 5432/6379 sudah dipakai PostgreSQL/Redis lain di mesin Anda,
 > ubah `POSTGRES_HOST_PORT` / `REDIS_HOST_PORT` di `.env` (default 55432 / 63790),
