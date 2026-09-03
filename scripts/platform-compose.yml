@@ -1,0 +1,69 @@
+# ============================================================================
+# platform-compose.yml — infrastruktur BERSAMA untuk semua sekolah (Model 1).
+#
+#   PostgreSQL bersama (satu server, banyak database — satu per sekolah)
+#   nginx bersama          (reverse proxy + TLS untuk semua subdomain sekolah)
+#
+# Redis & API bukan di sini — masing-masing per sekolah (scripts/compose/<code>.yml,
+# dibuat oleh provision-school.sh).
+#
+# Prasyarat sekali di server:
+#   docker network create eskul-net
+#   cp scripts/.platform.env.example scripts/.platform.env   # lalu isi PG_PASSWORD
+#
+# Jalankan:
+#   docker compose --env-file scripts/.platform.env -f scripts/platform-compose.yml up -d
+# ============================================================================
+name: eskul-platform
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: eskul-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eskul
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD di scripts/.platform.env}
+      POSTGRES_DB: postgres
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=192MB
+      - -c
+      - max_connections=100
+      - -c
+      - wal_compression=on
+    ports: ['127.0.0.1:5432:5432']
+    volumes: ['pgdata:/var/lib/postgresql/data']
+    networks: [eskul-net]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U eskul']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: eskul-nginx
+    restart: unless-stopped
+    ports: ['80:80', '443:443']
+    volumes:
+      - /etc/eskul/nginx:/etc/nginx/conf.d:ro       # blok server per sekolah
+      - /var/www/eskul-admin:/var/www/eskul-admin:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    networks: [eskul-net]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
+
+volumes:
+  pgdata:
+
+networks:
+  eskul-net:
+    external: true

@@ -260,8 +260,12 @@ Self-review lengkap (6 poin checklist §4.3, temuan per-severity, status) di
 - **Load test** (`scratchpad/loadtest.mjs`): write p95 **< 800 ms** di semua beban uji;
   read p95 **< 500 ms** pada concurrency realistis per-instance. Detail + caveat hardware
   dev di [`PERFORMANCE.md`](PERFORMANCE.md).
-- **Multi-tenant**: dievaluasi (shared-DB + `school_id` + filter otomatis) + rencana migrasi
-  bertahap di [`MULTI-TENANT.md`](MULTI-TENANT.md); implementasi ditunda (requirement aktif single-tenant).
+- **Multi-tenant**: **Model 1 (satu deployment per sekolah)** terimplementasi di
+  [`scripts/`](scripts/README.md) — PostgreSQL bersama (DB + role terpisah per sekolah),
+  nginx bersama, Redis + API per sekolah, tanpa perubahan kode aplikasi. Skrip
+  `provision-school.sh` / `list-schools.sh` / `suspend`/`resume` / `deprovision-school.sh`,
+  test `npm run provision:test`. Untuk SaaS self-serve skala besar, shared-DB + `school_id` +
+  filter otomatis masih di [`MULTI-TENANT.md`](MULTI-TENANT.md) (ditunda).
 
 ## Data Master admin (Fase 1.2)
 

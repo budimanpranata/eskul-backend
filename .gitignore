@@ -29,5 +29,9 @@ npm-debug.log*
 # secrets
 /secrets
 
+# provisioning multi-sekolah (Model 1)
+/scripts/.platform.env
+/state
+
 # File hasil export laporan (Fase 3.1) - disimpan lokal bila S3 tak dikonfigurasi
 storage/

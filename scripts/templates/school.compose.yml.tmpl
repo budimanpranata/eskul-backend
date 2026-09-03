@@ -1,0 +1,44 @@
+# Stack sekolah "@@CODE@@" — dibuat oleh scripts/provision-school.sh.
+# Dijalankan bersama platform-compose.yml:
+#   docker compose -f scripts/platform-compose.yml -f <file-ini> up -d
+name: eskul-@@CODE@@
+
+services:
+  redis-@@CODE@@:
+    image: redis:7-alpine
+    container_name: eskul-redis-@@CODE@@
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes',
+              '--maxmemory', '128mb', '--maxmemory-policy', 'noeviction']
+    volumes: ['redisdata-@@CODE@@:/data']
+    networks: [eskul-net]
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
+
+  api-@@CODE@@:
+    image: @@API_IMAGE@@
+    container_name: eskul-api-@@CODE@@
+    restart: unless-stopped
+    depends_on:
+      redis-@@CODE@@: { condition: service_started }
+    env_file: @@ENV_FILE@@
+    # nginx bersama mem-proxy https://@@CODE@@.@@BASE_DOMAIN@@ ke sini lewat jaringan compose;
+    # port loopback di bawah hanya untuk debug/health-check dari host.
+    ports: ['127.0.0.1:@@PORT@@:3000']
+    volumes:
+      - reports-@@CODE@@:/app/storage/reports
+      - @@SECRETS_DIR@@:/app/secrets:ro
+    networks: [eskul-net]
+    healthcheck:
+      test: ['CMD', 'wget', '-qO-', 'http://localhost:3000/api/v1/health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging: { driver: json-file, options: { max-size: "10m", max-file: "5" } }
+
+volumes:
+  redisdata-@@CODE@@:
+  reports-@@CODE@@:
+
+networks:
+  eskul-net:
+    external: true

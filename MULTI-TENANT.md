@@ -72,7 +72,22 @@ Semua langkah kompatibel dengan data & test single-tenant yang ada (satu sekolah
 
 ## 4. Status
 
-**Ditunda.** Requirement aktif = single-tenant per instance (deployment 1 sekolah / 1 dinas
-kecil). Skema & kode saat ini **sudah "multi-tenant ready"** dalam arti: abstraksi
-repository terpusat di service, `AuthenticatedUser` mudah diperluas, tidak ada query
-mentah tersebar. Rencana di §2 siap dieksekusi saat kebutuhan multi-sekolah nyata muncul.
+**Strategi A (shared DB + `school_id`) di §2 masih DITUNDA** — itu jalur untuk
+SaaS self-serve skala besar (ratusan/ribuan sekolah, pendaftaran mandiri).
+
+**Yang sudah diimplementasikan: Model 1 — "satu deployment per sekolah"**
+(`scripts/`, lihat [`scripts/README.md`](scripts/README.md)). PostgreSQL bersama
+(database + role terpisah per sekolah) + nginx bersama + satu container Redis & API
+per sekolah. **Nol perubahan kode aplikasi** — tiap instance hanya beda `DATABASE_URL`
+/ `REDIS_HOST`. Isolasi: DB & kredensial Postgres terpisah + `REVOKE CONNECT FROM
+PUBLIC` + Redis terpisah. Skrip: `provision-school.sh`, `list-schools.sh`,
+`suspend`/`resume`, `deprovision-school.sh` (+ `npm run provision:test`). Cocok
+untuk **puluhan sekolah** (mis. distribusi lewat dinas). Kelemahan sadar: N stack
+untuk dipantau/patch/backup; analitik lintas-sekolah butuh lapisan agregasi
+terpisah; belum ada konsol operator / pendaftaran mandiri / tagihan.
+
+**Kapan pindah ke Strategi A (§2):** saat jumlah sekolah melewati ~20–30, atau saat
+butuh pendaftaran mandiri & konsol operator terpusat. §2 dikerjakan sebagai migrasi
+terjadwal tersendiri dengan regresi penuh; skema & kode saat ini sudah "ready"
+(abstraksi repository terpusat, `AuthenticatedUser` mudah diperluas, tak ada query
+mentah tersebar).

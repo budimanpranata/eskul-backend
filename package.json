@@ -24,7 +24,8 @@
     "prisma:studio": "prisma studio",
     "prisma:reset": "prisma migrate reset",
     "db:seed": "tsx prisma/seed.ts",
-    "db:seed:demo": "tsx prisma/seed-demo.ts"
+    "db:seed:demo": "tsx prisma/seed-demo.ts",
+    "provision:test": "node scripts/test-provision.mjs"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
