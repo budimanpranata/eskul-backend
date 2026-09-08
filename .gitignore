@@ -33,5 +33,6 @@ npm-debug.log*
 /scripts/.platform.env
 /state
 
-# File hasil export laporan (Fase 3.1) - disimpan lokal bila S3 tak dikonfigurasi
-storage/
+# File hasil export laporan (Fase 3.1) - disimpan lokal bila S3 tak dikonfigurasi.
+# Anchor ke root: JANGAN sampai mengabaikan src/modules/reports/storage/ (kode sumber).
+/storage/
