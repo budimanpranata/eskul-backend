@@ -41,6 +41,31 @@ export class CoachController {
     return this.attendance.roster(user.id, id);
   }
 
+  /** Roster + rekap per siswa (jumlah sesi, %hadir, rata-rata keaktifan). */
+  @Get('extracurriculars/:id/students')
+  @Audit({ action: 'VIEW_EXTRACURRICULAR_ROSTER', entityType: 'extracurricular', entityIdParam: 'id' })
+  students(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.attendance.ekskulStudentStats(user.id, id);
+  }
+
+  /** Perkembangan 1 siswa di ekskul ini (kehadiran + tren & catatan penilaian). */
+  @Get('extracurriculars/:id/students/:studentId/progress')
+  studentProgress(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Param('studentId', ParseUUIDPipe) studentId: string,
+    @CurrentUser() user: AuthenticatedUser,
+    @Query('period') period: string | undefined,
+    @Ip() ip: string,
+  ) {
+    return this.attendance.coachStudentProgress(
+      user.id,
+      id,
+      studentId,
+      period === 'monthly' ? 'monthly' : 'weekly',
+      ip ?? null,
+    );
+  }
+
   @Post('students/qr-scan')
   @HttpCode(200)
   qrScan(

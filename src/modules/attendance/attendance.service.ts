@@ -11,6 +11,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { NotificationsService } from '../notifications/notifications.service.js';
 import { formatTimeOfDay, parseTimeOfDay } from '../../common/util/time-of-day.js';
+import { bucketActivenessTrend } from '../parents/parents.service.js';
 import type { SubmitAttendanceDto } from './dto/submit-attendance.dto.js';
 
 interface Actor {
@@ -245,6 +246,160 @@ export class AttendanceService {
     });
   }
 
+  /**
+   * GET /coach/extracurriculars/:id/students — roster + rekap ringkas per siswa
+   * (jumlah sesi, %hadir, rata-rata keaktifan). Untuk layar daftar siswa pembina.
+   */
+  async ekskulStudentStats(userId: string, extracurricularId: string) {
+    const coach = await this.getCoachOrThrow(userId);
+    const ekskul = await this.assertCoachOwnsEkskul(coach.id, extracurricularId);
+
+    const members = await this.prisma.extracurricularMember.findMany({
+      where: { extracurricularId, student: { isActive: true } },
+      include: {
+        student: { select: { id: true, nis: true, fullName: true, classGrade: true, photoUrl: true } },
+      },
+      orderBy: { student: { fullName: 'asc' } },
+    });
+    const studentIds = members.map((m) => m.studentId);
+
+    const details = studentIds.length
+      ? await this.prisma.attendanceDetail.findMany({
+          where: {
+            studentId: { in: studentIds },
+            session: { extracurricularId, status: { in: ['SUBMITTED', 'SYNCED'] } },
+          },
+          select: { studentId: true, status: true, activenessScore: true },
+        })
+      : [];
+
+    const agg = new Map<string, { present: number; total: number; sum: number; n: number }>();
+    for (const d of details) {
+      const s = agg.get(d.studentId) ?? { present: 0, total: 0, sum: 0, n: 0 };
+      s.total += 1;
+      if (d.status === 'HADIR') s.present += 1;
+      if (d.activenessScore != null) {
+        s.sum += d.activenessScore;
+        s.n += 1;
+      }
+      agg.set(d.studentId, s);
+    }
+
+    return {
+      extracurricular: { id: ekskul.id, name: ekskul.name },
+      students: members.map((m) => {
+        const s = agg.get(m.studentId);
+        return {
+          ...m.student,
+          sessions: s?.total ?? 0,
+          present: s?.present ?? 0,
+          attendance_pct: s && s.total ? Math.round((s.present / s.total) * 1000) / 10 : 0,
+          avg_activeness: s && s.n ? Math.round((s.sum / s.n) * 10) / 10 : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * GET /coach/extracurriculars/:id/students/:studentId/progress — perkembangan
+   * satu siswa DI EKSKUL INI: rekap kehadiran, tren & rata-rata keaktifan, dan
+   * daftar penilaian (skor + catatan) yang pembina berikan tiap sesi.
+   */
+  async coachStudentProgress(
+    userId: string,
+    extracurricularId: string,
+    studentId: string,
+    period: 'weekly' | 'monthly',
+    ip: string | null,
+  ) {
+    const coach = await this.getCoachOrThrow(userId);
+    const ekskul = await this.assertCoachOwnsEkskul(coach.id, extracurricularId);
+
+    const member = await this.prisma.extracurricularMember.findUnique({
+      where: { extracurricularId_studentId: { extracurricularId, studentId } },
+      select: {
+        student: { select: { id: true, nis: true, fullName: true, classGrade: true, photoUrl: true } },
+      },
+    });
+    if (!member) throw new NotFoundException('Siswa bukan anggota ekstrakurikuler ini.');
+
+    const details = await this.prisma.attendanceDetail.findMany({
+      where: {
+        studentId,
+        session: { extracurricularId, status: { in: ['SUBMITTED', 'SYNCED'] } },
+      },
+      include: {
+        session: {
+          select: {
+            sessionDate: true,
+            materialDescription: true,
+            coach: { select: { user: { select: { fullName: true } } } },
+          },
+        },
+      },
+      orderBy: { session: { sessionDate: 'asc' } },
+    });
+
+    const counts = { hadir: 0, izin: 0, sakit: 0, alpa: 0 };
+    for (const d of details) {
+      const k = d.status.toLowerCase() as keyof typeof counts;
+      if (k in counts) counts[k] += 1;
+    }
+    const total = details.length;
+    const scored = details.filter((d) => d.activenessScore != null);
+    const averageActiveness = scored.length
+      ? Math.round((scored.reduce((s, d) => s + (d.activenessScore ?? 0), 0) / scored.length) * 10) / 10
+      : null;
+
+    const evaluations = details
+      .filter((d) => d.activenessScore != null || d.skillNotes || d.personalNotes)
+      .slice()
+      .reverse()
+      .slice(0, 30)
+      .map((d) => ({
+        date: d.session.sessionDate.toISOString().slice(0, 10),
+        activeness_score: d.activenessScore ?? null,
+        skill_notes: d.skillNotes ?? null,
+        personal_notes: d.personalNotes ?? null,
+        coach_name: d.session.coach.user.fullName,
+      }));
+
+    await this.audit.log({
+      userId,
+      action: 'VIEW_STUDENT_DATA',
+      entityType: 'student',
+      entityId: studentId,
+      ipAddress: ip,
+      metadata: { via: 'coach-progress', extracurricularId, period },
+    });
+
+    return {
+      student: {
+        id: member.student.id,
+        nis: member.student.nis,
+        full_name: member.student.fullName,
+        class_grade: member.student.classGrade,
+        photo_url: member.student.photoUrl,
+      },
+      extracurricular: { id: ekskul.id, name: ekskul.name },
+      period,
+      attendance_summary: {
+        total_sessions: total,
+        hadir: counts.hadir,
+        izin: counts.izin,
+        sakit: counts.sakit,
+        alpa: counts.alpa,
+        percentage: total ? Math.round((counts.hadir / total) * 1000) / 10 : 0,
+      },
+      average_activeness: averageActiveness,
+      activeness_trend: bucketActivenessTrend(
+        details.map((d) => ({ sessionDate: d.session.sessionDate, status: d.status, score: d.activenessScore })),
+        period,
+      ),
+      evaluations,
+    };
+  }
+
   /** POST /attendance/submit — presensi + materi, idempoten (dokumen desain 4.1). */
   async submit(dto: SubmitAttendanceDto, actor: Actor) {
     const coach = await this.getCoachOrThrow(actor.userId);
@@ -415,6 +570,18 @@ export class AttendanceService {
     const coach = await this.prisma.coach.findUnique({ where: { userId }, select: { id: true } });
     if (!coach) throw new ForbiddenException('Akun ini tidak memiliki profil pembina.');
     return coach;
+  }
+
+  private async assertCoachOwnsEkskul(coachId: string, extracurricularId: string) {
+    const ekskul = await this.prisma.extracurricular.findUnique({
+      where: { id: extracurricularId },
+      select: { id: true, name: true, isActive: true, defaultCoachId: true },
+    });
+    if (!ekskul || !ekskul.isActive) throw new NotFoundException('Ekstrakurikuler tidak ditemukan.');
+    if (ekskul.defaultCoachId !== coachId) {
+      throw new ForbiddenException('Anda bukan pembina ekstrakurikuler ini.');
+    }
+    return ekskul;
   }
 }
 
