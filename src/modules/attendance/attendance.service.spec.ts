@@ -227,6 +227,67 @@ describe('AttendanceService.submit', () => {
       expect(res.pendingSubmitToday).toBe(0);
     });
   });
+
+  describe('roster & progress siswa untuk pembina', () => {
+    beforeEach(() => {
+      prisma.extracurricular.findUnique.mockResolvedValue({
+        id: 'ek-1', name: 'Futsal', isActive: true, defaultCoachId: 'coach-1',
+      });
+      prisma.attendanceDetail = { findMany: vi.fn().mockResolvedValue([]) };
+    });
+
+    it('ekskulStudentStats: rekap per siswa (sesi, %hadir, rata-rata keaktifan)', async () => {
+      prisma.extracurricularMember.findMany.mockResolvedValue([
+        { studentId: 's1', student: { id: 's1', nis: 'N1', fullName: 'Andi', classGrade: '4A', photoUrl: null } },
+        { studentId: 's2', student: { id: 's2', nis: 'N2', fullName: 'Bunga', classGrade: '4A', photoUrl: null } },
+      ]);
+      prisma.attendanceDetail.findMany.mockResolvedValue([
+        { studentId: 's1', status: 'HADIR', activenessScore: 4 },
+        { studentId: 's1', status: 'HADIR', activenessScore: 2 },
+        { studentId: 's1', status: 'ALPA', activenessScore: null },
+      ]);
+
+      const res = await service.ekskulStudentStats('u1', 'ek-1');
+      expect(res.extracurricular).toEqual({ id: 'ek-1', name: 'Futsal' });
+      const andi = res.students.find((s: any) => s.id === 's1');
+      expect(andi).toMatchObject({ sessions: 3, present: 2, attendance_pct: 66.7, avg_activeness: 3 });
+      const bunga = res.students.find((s: any) => s.id === 's2');
+      expect(bunga).toMatchObject({ sessions: 0, present: 0, attendance_pct: 0, avg_activeness: null });
+    });
+
+    it('coachStudentProgress: summary + average_activeness + evaluations + audit', async () => {
+      prisma.extracurricularMember.findUnique.mockResolvedValue({
+        student: { id: 's1', nis: 'N1', fullName: 'Andi', classGrade: '4A', photoUrl: null },
+      });
+      const sess = (d: string) => ({
+        sessionDate: new Date(`${d}T00:00:00.000Z`),
+        materialDescription: null,
+        coach: { user: { fullName: 'Bu Sri' } },
+      });
+      prisma.attendanceDetail.findMany.mockResolvedValue([
+        { status: 'HADIR', activenessScore: 3, skillNotes: 'Dribbling ok', personalNotes: null, session: sess('2026-08-04') },
+        { status: 'HADIR', activenessScore: 5, skillNotes: null, personalNotes: 'Fokus meningkat', session: sess('2026-08-11') },
+        { status: 'IZIN', activenessScore: null, skillNotes: null, personalNotes: null, session: sess('2026-08-18') },
+      ]);
+
+      const res = await service.coachStudentProgress('u1', 'ek-1', 's1', 'weekly', '1.2.3.4');
+      expect(res.student).toMatchObject({ full_name: 'Andi', class_grade: '4A' });
+      expect(res.attendance_summary).toMatchObject({ total_sessions: 3, hadir: 2, izin: 1, percentage: 66.7 });
+      expect(res.average_activeness).toBe(4);
+      expect(res.evaluations).toHaveLength(2);
+      expect(res.evaluations[0]).toMatchObject({ activeness_score: 5, personal_notes: 'Fokus meningkat' });
+      expect(audit.log).toHaveBeenCalledWith(
+        expect.objectContaining({ action: 'VIEW_STUDENT_DATA', entityId: 's1' }),
+      );
+    });
+
+    it('bukan pembina ekskul → Forbidden', async () => {
+      prisma.extracurricular.findUnique.mockResolvedValue({
+        id: 'ek-1', name: 'Futsal', isActive: true, defaultCoachId: 'coach-LAIN',
+      });
+      await expect(service.ekskulStudentStats('u1', 'ek-1')).rejects.toThrowError(/bukan pembina/);
+    });
+  });
 });
 
 function isoToday(): string {
