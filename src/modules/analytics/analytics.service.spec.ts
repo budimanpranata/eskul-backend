@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AnalyticsService, ANALYTICS_CACHE_KEY } from './analytics.service.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
@@ -45,6 +45,11 @@ function makeRedis() {
 
 describe('AnalyticsService.overview', () => {
   let redis: ReturnType<typeof makeRedis>;
+
+  // Bekukan jam ke Kamis 2026-01-01 12:00 UTC: `daysAgo(1..3)` semua tetap di
+  // minggu berjalan (Senin 2025-12-29) apa pun hari nyata saat CI berjalan.
+  beforeAll(() => vi.setSystemTime(new Date('2026-01-01T12:00:00.000Z')));
+  afterAll(() => vi.useRealTimers());
 
   beforeEach(() => {
     redis = makeRedis();

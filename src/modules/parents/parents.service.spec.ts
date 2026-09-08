@@ -132,6 +132,38 @@ describe('ParentsService', () => {
         expect.objectContaining({ action: 'VIEW_STUDENT_DATA', entityId: 's1' }),
       );
     });
+
+    it('per-ekskul: average_activeness + evaluations (skor & catatan per sesi)', async () => {
+      prisma.parentStudentRelation.findFirst.mockResolvedValue({ id: 'r1' });
+      prisma.student.findUniqueOrThrow.mockResolvedValue({
+        id: 's1', fullName: 'Ananda', classGrade: '3A', photoUrl: null,
+      });
+      prisma.extracurricularMember.findMany.mockResolvedValue([
+        { extracurricularId: 'e1', extracurricular: { id: 'e1', name: 'Futsal' } },
+      ]);
+      const sess = (date: string) => ({
+        extracurricularId: 'e1',
+        sessionDate: new Date(`${date}T00:00:00.000Z`),
+        materialDescription: null, // tanpa deskripsi materi — evaluations tetap muncul
+        coach: { user: { fullName: 'Pak Andi' } },
+      });
+      prisma.attendanceDetail.findMany.mockResolvedValue([
+        { status: 'HADIR', activenessScore: 4, skillNotes: 'Passing membaik', personalNotes: null, session: sess('2026-08-04') },
+        { status: 'HADIR', activenessScore: 5, skillNotes: null, personalNotes: 'Sangat percaya diri', session: sess('2026-08-11') },
+        { status: 'IZIN', activenessScore: null, skillNotes: null, personalNotes: null, session: sess('2026-08-18') },
+      ]);
+
+      const res = await service.childProgress(
+        's1', { period: 'weekly' } as any, { userId: 'u1', ip: null },
+      );
+      const ek = res.extracurriculars[0] as any;
+      expect(ek.average_activeness).toBe(4.5);
+      expect(ek.evaluations).toHaveLength(2); // baris IZIN tanpa skor/catatan tidak masuk
+      expect(ek.evaluations[0]).toMatchObject({
+        activeness_score: 5, personal_notes: 'Sangat percaya diri', coach_name: 'Pak Andi',
+      });
+      expect(ek.evaluations[1]).toMatchObject({ activeness_score: 4, skill_notes: 'Passing membaik' });
+    });
   });
 
   describe('linkRequest', () => {

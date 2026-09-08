@@ -225,6 +225,25 @@ export class ParentsService {
           coach_feedback: d.skillNotes ?? null,
         }));
 
+      // Penilaian per sesi (skor keaktifan + catatan pembina). Tidak difilter oleh
+      // materialDescription — sesi bisa punya nilai tanpa deskripsi materi.
+      const scored = details.filter((d) => d.activenessScore != null);
+      const averageActiveness = scored.length
+        ? Math.round((scored.reduce((s, d) => s + (d.activenessScore ?? 0), 0) / scored.length) * 10) / 10
+        : null;
+      const evaluations = details
+        .filter((d) => d.activenessScore != null || d.skillNotes || d.personalNotes)
+        .slice()
+        .reverse()
+        .slice(0, 20)
+        .map((d) => ({
+          date: fmtDate(d.session.sessionDate),
+          activeness_score: d.activenessScore ?? null,
+          skill_notes: d.skillNotes ?? null,
+          personal_notes: d.personalNotes ?? null,
+          coach_name: d.session.coach.user.fullName,
+        }));
+
       return {
         id: m.extracurricular.id,
         name: m.extracurricular.name,
@@ -236,7 +255,9 @@ export class ParentsService {
           alpa: counts.alpa,
           percentage: total ? Math.round((counts.hadir / total) * 1000) / 10 : 0,
         },
+        average_activeness: averageActiveness,
         activeness_trend: activenessTrend,
+        evaluations,
         materials_timeline: materialsTimeline,
       };
     });
