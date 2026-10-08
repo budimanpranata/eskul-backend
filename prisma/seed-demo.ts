@@ -95,27 +95,33 @@ const slug = (s: string) =>
 async function upsertUser(
   roleCode: string,
   u: { fullName: string; email: string; phone: string; password: string },
+  schoolId: string | null,
 ) {
   const role = await prisma.role.findUniqueOrThrow({ where: { code: roleCode } });
   const passwordHash = await argon2.hash(u.password, { type: argon2.argon2id });
   return prisma.user.upsert({
     where: { email: u.email },
-    update: { roleId: role.id, fullName: u.fullName, phoneNumber: u.phone, isActive: true },
+    update: { roleId: role.id, fullName: u.fullName, phoneNumber: u.phone, isActive: true, schoolId },
     create: {
-      roleId: role.id, fullName: u.fullName, email: u.email,
+      roleId: role.id, schoolId, fullName: u.fullName, email: u.email,
       phoneNumber: u.phone, passwordHash, isActive: true,
     },
   });
 }
 
 async function main() {
+  const school = await prisma.school.findUniqueOrThrow({ where: { code: 'SD-DEFAULT' } });
   const admin = await prisma.user.findUnique({ where: { email: 'admin@eskul.test' } });
   const approvedBy = admin?.id ?? null;
 
   // -- Pembina + Coach --
   const coachId: Record<string, string> = {};
   for (const c of COACHES) {
-    const user = await upsertUser('PEMBINA', { fullName: c.fullName, email: c.email, phone: c.phone, password: PW_COACH });
+    const user = await upsertUser(
+      'PEMBINA',
+      { fullName: c.fullName, email: c.email, phone: c.phone, password: PW_COACH },
+      school.id,
+    );
     const coach = await prisma.coach.upsert({
       where: { userId: user.id },
       update: { specialization: c.spec },
@@ -128,9 +134,9 @@ async function main() {
   const ekId: Record<string, string> = {};
   const ekSchedule: Record<string, { id: string; d: number; s: string; e: string; loc: string }[]> = {};
   for (const ek of EKSKUL) {
-    let row = await prisma.extracurricular.findFirst({ where: { name: ek.name } });
+    let row = await prisma.extracurricular.findFirst({ where: { name: ek.name, schoolId: school.id } });
     row ??= await prisma.extracurricular.create({
-      data: { name: ek.name, category: ek.category, maxCapacity: ek.quota, defaultCoachId: coachId[ek.coach] },
+      data: { schoolId: school.id, name: ek.name, category: ek.category, maxCapacity: ek.quota, defaultCoachId: coachId[ek.coach] },
     });
     if (row.defaultCoachId !== coachId[ek.coach] || !row.isActive) {
       row = await prisma.extracurricular.update({
@@ -160,10 +166,10 @@ async function main() {
 
   for (const st of STUDENTS) {
     const s = await prisma.student.upsert({
-      where: { nis: st.nis },
+      where: { schoolId_nis: { schoolId: school.id, nis: st.nis } },
       update: { fullName: st.name, classGrade: st.cls, gender: st.g, isActive: true },
       create: {
-        nis: st.nis, fullName: st.name, classGrade: st.cls, gender: st.g,
+        schoolId: school.id, nis: st.nis, fullName: st.name, classGrade: st.cls, gender: st.g,
         qrToken: `demo-qr-${st.nis}`, isActive: true,
       },
     });
@@ -179,12 +185,16 @@ async function main() {
     }
 
     if (st.parent) {
-      const pu = await upsertUser('ORANGTUA', {
-        fullName: st.parent.name,
-        email: `ortu.${slug(st.name)}@ortu.eskul.test`,
-        phone: `08122${st.nis.slice(-6)}`,
-        password: PW_PARENT,
-      });
+      const pu = await upsertUser(
+        'ORANGTUA',
+        {
+          fullName: st.parent.name,
+          email: `ortu.${slug(st.name)}@ortu.eskul.test`,
+          phone: `08122${st.nis.slice(-6)}`,
+          password: PW_PARENT,
+        },
+        null,
+      );
       const parent = await prisma.parent.upsert({
         where: { userId: pu.id },
         update: { relationType: st.parent.rel, identityVerified: st.parent.status === 'APPROVED' },

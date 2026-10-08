@@ -73,9 +73,12 @@ export class ReportsService {
   }
 
   /** GET /admin/reports/attendance/preview — tabel data sebelum export. */
-  async preview(query: ReportPreviewQueryDto): Promise<PaginatedResult<unknown>> {
+  async preview(
+    query: ReportPreviewQueryDto,
+    schoolScope: string | undefined,
+  ): Promise<PaginatedResult<unknown>> {
     const filters = ReportsService.filtersOf(query);
-    const ds = await buildAttendanceDataset(this.prisma, filters);
+    const ds = await buildAttendanceDataset(this.prisma, filters, schoolScope);
     const start = pageSkip(query.page, query.pageSize);
     const pageRows = ds.rows.slice(start, start + query.pageSize);
     return {
@@ -92,16 +95,18 @@ export class ReportsService {
    * GET /admin/reports/attendance?format=pdf|xlsx — memicu job export ASINKRON.
    * Tidak menghasilkan file di request thread (DoD: 500 siswa tanpa timeout).
    */
-  async requestExport(query: ReportExportQueryDto, actor: Actor) {
+  async requestExport(query: ReportExportQueryDto, actor: Actor, schoolScope: string | undefined) {
     const filters = ReportsService.filtersOf(query);
     const { dateFrom, dateTo } = resolveRange(filters);
 
+    // `_schoolScope` disimpan di JSONB filters (bukan ditampilkan ke user) agar
+    // worker async (`runExportJob`, tanpa konteks request) tahu tenant yang benar.
     const record = await this.prisma.reportExport.create({
       data: {
         requestedById: actor.userId,
         reportType: 'attendance',
         format: query.format,
-        filters: { ...filters, dateFrom, dateTo },
+        filters: { ...filters, dateFrom, dateTo, _schoolScope: schoolScope ?? null },
         status: 'PENDING',
       },
       select: { id: true, status: true, format: true, createdAt: true },
@@ -141,13 +146,15 @@ export class ReportsService {
   }
 
   /** GET /admin/reports/exports — riwayat permintaan export. */
-  async listExports(query: {
-    page: number;
-    pageSize: number;
-  }): Promise<PaginatedResult<unknown>> {
+  async listExports(
+    query: { page: number; pageSize: number },
+    schoolScope: string | undefined,
+  ): Promise<PaginatedResult<unknown>> {
+    const where = schoolScope !== undefined ? { requestedBy: { schoolId: schoolScope } } : {};
     const [total, rows] = await this.prisma.$transaction([
-      this.prisma.reportExport.count(),
+      this.prisma.reportExport.count({ where }),
       this.prisma.reportExport.findMany({
+        where,
         orderBy: { createdAt: 'desc' },
         skip: pageSkip(query.page, query.pageSize),
         take: query.pageSize,
@@ -175,9 +182,9 @@ export class ReportsService {
   }
 
   /** GET /admin/reports/exports/:id — status + (bila siap) signed download URL. */
-  async getExport(id: string) {
-    const row = await this.prisma.reportExport.findUnique({
-      where: { id },
+  async getExport(id: string, schoolScope: string | undefined) {
+    const row = await this.prisma.reportExport.findFirst({
+      where: { id, ...(schoolScope !== undefined ? { requestedBy: { schoolId: schoolScope } } : {}) },
       select: {
         id: true,
         format: true,
@@ -242,8 +249,9 @@ export class ReportsService {
     });
 
     try {
-      const filters = (record.filters ?? {}) as ReportFilters;
-      const ds = await buildAttendanceDataset(this.prisma, filters);
+      const storedFilters = (record.filters ?? {}) as ReportFilters & { _schoolScope?: string | null };
+      const { _schoolScope, ...filters } = storedFilters;
+      const ds = await buildAttendanceDataset(this.prisma, filters, _schoolScope ?? undefined);
       const buffer =
         record.format === 'pdf'
           ? await renderAttendancePdf(ds)
@@ -293,15 +301,20 @@ export class ReportsService {
   }
 
   private decorate<
-    T extends { id: string; status: string; expiresAt: Date | null },
+    T extends { id: string; status: string; expiresAt: Date | null; filters?: unknown },
   >(row: T): T & { downloadUrl: string | null; downloadExpiresAt: string | null } {
+    const filters =
+      row.filters && typeof row.filters === 'object'
+        ? (({ _schoolScope, ...rest }: Record<string, unknown>) => rest)(row.filters as Record<string, unknown>)
+        : row.filters;
+    const base = { ...row, ...(row.filters !== undefined ? { filters } : {}) };
     const expired = !!row.expiresAt && row.expiresAt.getTime() < Date.now();
     if (row.status !== 'READY' || expired) {
-      return { ...row, downloadUrl: null, downloadExpiresAt: null };
+      return { ...base, downloadUrl: null, downloadExpiresAt: null };
     }
     const { path, expiresAt } = this.signer.buildDownloadPath(row.id);
     return {
-      ...row,
+      ...base,
       downloadUrl: `/${this.apiPrefix}${path}`,
       downloadExpiresAt: expiresAt.toISOString(),
     };

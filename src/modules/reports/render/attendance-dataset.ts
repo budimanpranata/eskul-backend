@@ -57,6 +57,8 @@ export function resolveRange(f: ReportFilters): { dateFrom: string; dateTo: stri
 export async function buildAttendanceDataset(
   prisma: PrismaService,
   filters: ReportFilters,
+  /** `undefined` HANYA untuk ADMIN_SUPER (lintas sekolah) — lihat `tenantScope()`. */
+  schoolScope: string | undefined,
 ): Promise<AttendanceReportDataset> {
   const { dateFrom, dateTo } = resolveRange(filters);
   const from = new Date(`${dateFrom}T00:00:00.000Z`);
@@ -66,10 +68,12 @@ export async function buildAttendanceDataset(
     where: {
       student: {
         isActive: true,
+        ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}),
         ...(filters.classGrade ? { classGrade: filters.classGrade } : {}),
       },
       extracurricular: {
         isActive: true,
+        ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}),
         ...(filters.extracurricularId ? { id: filters.extracurricularId } : {}),
       },
     },

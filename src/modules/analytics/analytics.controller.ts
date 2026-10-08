@@ -1,7 +1,9 @@
 import { Controller, Get, Query } from '@nestjs/common';
 
 import { Audit } from '../../common/decorators/audit.decorator.js';
+import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
+import { tenantScope, type AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import { AnalyticsService } from './analytics.service.js';
 
 /**
@@ -16,7 +18,7 @@ export class AnalyticsController {
 
   @Get('overview')
   @Audit({ action: 'VIEW_ANALYTICS_OVERVIEW', entityType: 'analytics', captureQuery: ['fresh'] })
-  overview(@Query('fresh') fresh: string | undefined) {
-    return this.analytics.overview({ fresh: fresh === '1' || fresh === 'true' });
+  overview(@Query('fresh') fresh: string | undefined, @CurrentUser() user: AuthenticatedUser) {
+    return this.analytics.overview({ fresh: fresh === '1' || fresh === 'true' }, tenantScope(user));
   }
 }

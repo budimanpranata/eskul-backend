@@ -43,6 +43,7 @@ describe('ReportsService', () => {
           createdAt: new Date('2026-08-29T10:00:00Z'),
         }),
         findUnique: vi.fn(),
+        findFirst: vi.fn(),
         update: vi.fn().mockResolvedValue({}),
         count: vi.fn().mockResolvedValue(0),
         findMany: vi.fn().mockResolvedValue([]),
@@ -75,6 +76,7 @@ describe('ReportsService', () => {
       const res = await service.requestExport(
         { format: 'xlsx', classGrade: '4A', dateFrom: '2026-01-01', dateTo: '2026-06-01' } as never,
         { userId: 'admin-1', ip: '1.2.3.4' },
+        'school-1',
       );
 
       expect(prisma.reportExport.create).toHaveBeenCalledWith(
@@ -83,7 +85,12 @@ describe('ReportsService', () => {
             requestedById: 'admin-1',
             format: 'xlsx',
             status: 'PENDING',
-            filters: { classGrade: '4A', dateFrom: '2026-01-01', dateTo: '2026-06-01' },
+            filters: {
+              classGrade: '4A',
+              dateFrom: '2026-01-01',
+              dateTo: '2026-06-01',
+              _schoolScope: 'school-1',
+            },
           }),
         }),
       );
@@ -109,7 +116,7 @@ describe('ReportsService', () => {
     it('gagal enqueue → baris ditandai FAILED dan melempar ConflictException', async () => {
       queue.add.mockRejectedValue(new Error('redis down'));
       await expect(
-        service.requestExport({ format: 'pdf' } as never, { userId: 'admin-1', ip: null }),
+        service.requestExport({ format: 'pdf' } as never, { userId: 'admin-1', ip: null }, undefined),
       ).rejects.toBeInstanceOf(ConflictException);
       expect(prisma.reportExport.update).toHaveBeenCalledWith(
         expect.objectContaining({ where: { id: 'exp-1' }, data: expect.objectContaining({ status: 'FAILED' }) }),
@@ -234,26 +241,26 @@ describe('ReportsService', () => {
 
   describe('getExport', () => {
     it('tidak ada → NotFoundException', async () => {
-      prisma.reportExport.findUnique.mockResolvedValue(null);
-      await expect(service.getExport('nope')).rejects.toBeInstanceOf(NotFoundException);
+      prisma.reportExport.findFirst.mockResolvedValue(null);
+      await expect(service.getExport('nope', undefined)).rejects.toBeInstanceOf(NotFoundException);
     });
 
     it('READY → downloadUrl signed di bawah prefix API; PENDING → downloadUrl null', async () => {
-      prisma.reportExport.findUnique.mockResolvedValueOnce({
+      prisma.reportExport.findFirst.mockResolvedValueOnce({
         id: 'exp-1',
         status: 'READY',
         expiresAt: new Date(Date.now() + 60_000),
       });
-      const ready = await service.getExport('exp-1');
+      const ready = await service.getExport('exp-1', undefined);
       expect(ready.downloadUrl).toMatch(/^\/api\/v1\/admin\/reports\/downloads\/exp-1\?expires=\d+&sig=/);
       expect(ready.downloadExpiresAt).toEqual(expect.any(String));
 
-      prisma.reportExport.findUnique.mockResolvedValueOnce({
+      prisma.reportExport.findFirst.mockResolvedValueOnce({
         id: 'exp-2',
         status: 'PENDING',
         expiresAt: null,
       });
-      const pending = await service.getExport('exp-2');
+      const pending = await service.getExport('exp-2', undefined);
       expect(pending.downloadUrl).toBeNull();
     });
   });

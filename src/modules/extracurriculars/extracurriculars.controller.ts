@@ -15,7 +15,7 @@ import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto.js';
-import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import { tenantScope, type AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import {
   AddMembersDto,
   CreateExtracurricularDto,
@@ -33,24 +33,24 @@ export class ExtracurricularsController {
   constructor(private readonly ekskul: ExtracurricularsService) {}
 
   private actor(user: AuthenticatedUser, ip: string) {
-    return { id: user.id, ip: ip ?? null };
+    return { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) };
   }
 
   // --- ekskul ---
   @Get()
-  list(@Query() query: ListExtracurricularsQueryDto) {
-    return this.ekskul.list(query);
+  list(@Query() query: ListExtracurricularsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.ekskul.list(query, tenantScope(user));
   }
 
   /** Daftar ringkas ekskul aktif — di-cache Redis (Fase 4.4). Untuk dropdown filter. */
   @Get('catalog')
-  catalog() {
-    return this.ekskul.activeCatalog();
+  catalog(@CurrentUser() user: AuthenticatedUser) {
+    return this.ekskul.activeCatalog(tenantScope(user));
   }
 
   @Get(':id')
-  getOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.ekskul.getById(id);
+  getOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.ekskul.getById(id, tenantScope(user));
   }
 
   @Post()
@@ -125,8 +125,12 @@ export class ExtracurricularsController {
   // --- anggota ---
   @Get(':id/members')
   @Audit({ action: 'VIEW_EXTRACURRICULAR_ROSTER', entityType: 'extracurricular', entityIdParam: 'id' })
-  listMembers(@Param('id', ParseUUIDPipe) id: string, @Query() q: PaginationQueryDto) {
-    return this.ekskul.listMembers(id, q.page, q.pageSize);
+  listMembers(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query() q: PaginationQueryDto,
+    @CurrentUser() user: AuthenticatedUser,
+  ) {
+    return this.ekskul.listMembers(id, q.page, q.pageSize, tenantScope(user));
   }
 
   @Post(':id/members')

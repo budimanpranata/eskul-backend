@@ -52,6 +52,7 @@ backend/
 │   │   │   ├── storage/         # ReportStorage (interface) + LocalDiskReportStorage + factory
 │   │   │   └── report-signer.ts # HMAC-SHA256 + expires untuk URL unduhan
 │   │   ├── analytics/       # ✅ GET /admin/analytics/overview — agregat + cache Redis TTL 1 jam  (Fase 3.2)
+│   │   ├── schools/         # ✅ /admin/schools (ADMIN_SUPER) — daftar/kelola sekolah (tenant)  (beyond-plan)
 │   │   └── periodic-reports/# ✅ cron mingguan/bulanan → fan-out + batch → notifikasi ortu  (Fase 3.3)
 │   │       ├── period.ts        # window & key mingguan/bulanan + classifyTrend (pure)
 │   │       ├── *.service.ts     # @Cron + run-guard Redis + enqueue fan-out
@@ -260,12 +261,11 @@ Self-review lengkap (6 poin checklist §4.3, temuan per-severity, status) di
 - **Load test** (`scratchpad/loadtest.mjs`): write p95 **< 800 ms** di semua beban uji;
   read p95 **< 500 ms** pada concurrency realistis per-instance. Detail + caveat hardware
   dev di [`PERFORMANCE.md`](PERFORMANCE.md).
-- **Multi-tenant**: **Model 1 (satu deployment per sekolah)** terimplementasi di
-  [`scripts/`](scripts/README.md) — PostgreSQL bersama (DB + role terpisah per sekolah),
-  nginx bersama, Redis + API per sekolah, tanpa perubahan kode aplikasi. Skrip
-  `provision-school.sh` / `list-schools.sh` / `suspend`/`resume` / `deprovision-school.sh`,
-  test `npm run provision:test`. Untuk SaaS self-serve skala besar, shared-DB + `school_id` +
-  filter otomatis masih di [`MULTI-TENANT.md`](MULTI-TENANT.md) (ditunda).
+- **Multi-tenant**: dua model tersedia, lihat [`MULTI-TENANT.md`](MULTI-TENANT.md).
+  (1) **Model 1 (satu deployment per sekolah)** di [`scripts/`](scripts/README.md) —
+  PostgreSQL bersama (DB + role terpisah per sekolah), nginx bersama, Redis + API per
+  sekolah, tanpa perubahan kode aplikasi. (2) **Strategi A (shared DB + `school_id`,
+  beyond-plan)** — lihat bagian "Multi-Tenant & Pendaftaran Sekolah" di bawah.
 
 ## Data Master admin (Fase 1.2)
 
@@ -320,7 +320,7 @@ Endpoint Pembina (`@Roles('PEMBINA')`). "Ekskul milik pembina" = `extracurricula
 |---|---|---|
 | `POST /auth/register` | publik | Pendaftaran mandiri ORANGTUA (`consent:true` wajib) → users+parents + token; audit `PARENT_CONSENT_GIVEN` |
 | `GET /parent/children` | ORANGTUA | Anak dengan relasi `APPROVED` |
-| `POST /parent/link-request` | ORANGTUA | Ajukan relasi via `{ nis, studentName }` (verifikasi silang nama) → `PENDING`. Relasi yang **REJECTED tak bisa diajukan ulang < 24 jam** → 409 (Fase 2.4) |
+| `POST /parent/link-request` | ORANGTUA | Ajukan relasi via `{ schoolCode, nis, studentName }` (verifikasi silang nama) → `PENDING`. **`schoolCode` wajib sejak multi-tenant** — NIS kini unik per sekolah, bukan global. Relasi yang **REJECTED tak bisa diajukan ulang < 24 jam** → 409 (Fase 2.4) |
 | `GET /parent/child-progress/:studentId` | ORANGTUA | **Kontrak §4.2**. Wajib relasi `APPROVED`, jika tidak → **403** `{ error:'UNAUTHORIZED_RELATION' }` |
 | `GET /admin/parent-relations?status=` | ADMIN | Daftar relasi (default `PENDING`) + info ortu & siswa + **`suspicious`** (Fase 2.4: nomor HP dgn > 5 siswa berbeda / 24 jam) |
 | `PUT /admin/parent-relations/:id/approve` | ADMIN | `{ decision:'APPROVED'\|'REJECTED', reason? }` → set `approved_by`/`approved_at` + audit `APPROVE`/`REJECT_PARENT_RELATION` + **notif push `RELATION_DECISION`** ke ortu via queue (Fase 2.4) |
@@ -474,6 +474,63 @@ free-text trigram 937 ms, facets 84 ms (semua < 3 dtk — DoD).
 | CRUD siswa/pembina/anggota, submit presensi, QR scan/rotasi, register/approve relasi ortu, run laporan berkala | `CREATE_*`/`UPDATE_*`/`ENROLL_*`/`SUBMIT_ATTENDANCE`/`QR_SCAN`/`ROTATE_QR_TOKEN`/`APPROVE_PARENT_RELATION`/… | service-level `audit.log()` (sudah 100% sejak Fase 1.2–3.3) |
 | Auth | `LOGIN_SUCCESS/FAILED`, `LOGOUT`, `TOKEN_REFRESH` | service (Fase 1.1) |
 | **Tidak diaudit (bukan data personal):** `GET /coach/summary`, `GET /coach/today-sessions` & `/coach/sessions` (jadwal/agregat milik sendiri), `GET /admin/extracurriculars` & `/:id` (metadata ekskul), `GET /admin/reports/exports*` (status job), `GET /notifications/*` (inbox sendiri), `GET /auth/me` | — | — |
+
+## Multi-Tenant & Pendaftaran Sekolah (beyond-plan)
+
+Di luar 18-prompt rencana kerja asli — dikerjakan setelah Fase 4.4 karena kebutuhan
+nyata: **satu deployment, banyak sekolah, terisolasi penuh**, didaftarkan oleh
+operator platform (`ADMIN_SUPER`), bukan Model 1 (satu deployment per sekolah via
+`scripts/`, masih tersedia sebagai opsi ops terpisah). Detail arsitektur & trade-off
+lengkap di [`MULTI-TENANT.md`](MULTI-TENANT.md) §4.
+
+**Skema**: tabel `schools` (`id`, `code` UNIQUE, `name`, `is_active`) + kolom
+`school_id` di 3 tabel root — `users` (nullable: terisi untuk ADMIN/PEMBINA, `NULL`
+untuk ORANGTUA & ADMIN_SUPER), `students` (NOT NULL), `extracurriculars` (NOT NULL).
+Migration `20260831000000_add_schools` (+ `down.sql`) — backfill 1 sekolah
+`SD-DEFAULT` untuk seluruh data single-tenant lama (non-breaking). **`students.nis`
+kini UNIQUE per `(school_id, nis)`**, bukan global lagi.
+
+**Isolasi**: `tenantScope(user)` (`src/common/types/authenticated-user.ts`) —
+`undefined` (tanpa filter, lintas-sekolah) **hanya** untuk `ADMIN_SUPER`; untuk
+`ADMIN`/`PEMBINA` selalu `user.schoolId` eksak (JWT claim `sch`, diisi saat login
+dari `users.school_id`). Setiap controller meneruskan `tenantScope(user)` eksplisit
+ke service (bukan middleware/extension tersembunyi) — konsisten dengan gaya proyek
+(pengecekan otorisasi eksplisit, mudah diaudit per baris). Akses lintas-sekolah via
+ID langsung → **404** (bukan 403) agar tak membocorkan keberadaan baris. Dicakup:
+siswa/pembina/ekskul (CRUD + jadwal + anggota), katalog ekskul (cache Redis
+**per-sekolah**), laporan (preview/export/riwayat), analitik (cache Redis
+**per-sekolah**), persetujuan relasi ortu-siswa. **Tidak butuh scoping** (sudah aman
+lewat mekanisme lain): data ortu (isolasi lewat relasi per-siswa yang di-approve,
+bukan sekolah), laporan berkala otomatis (tiap notifikasi hanya berisi data anak
+sendiri), audit log (`ADMIN_SUPER`-only by design, lintas-tenant disengaja).
+
+**`POST /parent/link-request` kini wajib `schoolCode`** (NIS tak lagi unik global) —
+web-admin tak terpengaruh (endpoint ini dipakai ortu, bukan admin), mobile app
+(`LinkChildPage`) & dokumentasi kontrak sudah diperbarui.
+
+**Modul `schools`** (`src/modules/schools/`, semua `@Roles('ADMIN_SUPER')`,
+`/admin/schools`):
+
+| Path | Fungsi |
+|---|---|
+| `GET /admin/schools` | List + `_count` (users/students/extracurriculars), filter `search`/`isActive` |
+| `GET /admin/schools/:id` | Detail satu sekolah |
+| `POST /admin/schools` | Daftarkan sekolah + admin pertamanya (**satu transaksi**) — audit `CREATE_SCHOOL` |
+| `PUT /admin/schools/:id` | Ubah nama |
+| `POST /admin/schools/:id/admins` | Tambah admin lain ke sekolah yang sudah ada — audit `CREATE_SCHOOL_ADMIN` |
+| `POST /admin/schools/:id/suspend` | `is_active=false` — `AuthService.login`/`refresh` menolak **semua** ADMIN/PEMBINA sekolah ini walau akun masing-masing `is_active=true` — audit `SUSPEND_SCHOOL` |
+| `POST /admin/schools/:id/resume` | Kebalikannya — audit `RESUME_SCHOOL` |
+
+**Web admin**: menu "Kelola Sekolah" (`/schools`, superOnly — sama seperti Audit
+Log) — daftar sekolah + tombol Daftarkan/+ Admin/Suspend/Aktifkan.
+
+**Verifikasi**: `scratchpad/tenant-smoke.mjs` — 28/28 assertion vs Postgres+Redis
+nyata (daftar sekolah B, isolasi list & by-id di semua modul data, cache
+katalog/analitik per-sekolah, parent link-request butuh schoolCode benar, admin
+lintas-sekolah tak bisa approve relasi, suspend memblokir login & resume
+memulihkannya). 179 unit test tetap hijau (+15 dari sebelumnya: `schools.service.spec`
+baru + penyesuaian `parents`/`reports`/`analytics`/`jwt-auth.guard` spec untuk
+`schoolId`).
 
 ## Skrip npm
 

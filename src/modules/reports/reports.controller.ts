@@ -17,7 +17,7 @@ import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Public } from '../../common/decorators/public.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
 import { PaginationQueryDto } from '../../common/dto/pagination.dto.js';
-import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import { tenantScope, type AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import {
   ReportExportQueryDto,
   ReportPreviewQueryDto,
@@ -42,8 +42,8 @@ export class ReportsController {
     entityType: 'report',
     captureQuery: ['classGrade', 'extracurricularId', 'dateFrom', 'dateTo'],
   })
-  preview(@Query() query: ReportPreviewQueryDto) {
-    return this.reports.preview(query);
+  preview(@Query() query: ReportPreviewQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.reports.preview(query, tenantScope(user));
   }
 
   /** Kontrak §4: memicu job export ASINKRON. Balas 202 + resource status. */
@@ -55,21 +55,21 @@ export class ReportsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.reports.requestExport(query, { userId: user.id, ip: ip ?? null });
+    return this.reports.requestExport(query, { userId: user.id, ip: ip ?? null }, tenantScope(user));
   }
 
   /** Riwayat permintaan export (+ signed downloadUrl bila sudah siap). */
   @Roles('ADMIN')
   @Get('exports')
-  listExports(@Query() query: PaginationQueryDto) {
-    return this.reports.listExports(query);
+  listExports(@Query() query: PaginationQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.reports.listExports(query, tenantScope(user));
   }
 
   /** Status satu permintaan export (dipakai polling web admin). */
   @Roles('ADMIN')
   @Get('exports/:id')
-  getExport(@Param('id', ParseUUIDPipe) id: string) {
-    return this.reports.getExport(id);
+  getExport(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.reports.getExport(id, tenantScope(user));
   }
 
   /** Unduh file — hanya lewat signed URL yang valid & belum kedaluwarsa. */

@@ -22,6 +22,29 @@ datasource db {
 }
 
 // ============================================
+// 0. SCHOOLS (Multi-tenant — Strategi A, shared DB + school_id)
+// ============================================
+
+// Satu baris = satu sekolah (tenant). Didaftarkan oleh ADMIN_SUPER (platform
+// operator); setiap ADMIN/PEMBINA terikat ke satu `school_id` dan hanya bisa
+// melihat/mengubah data milik sekolahnya sendiri. ORANGTUA tidak terikat
+// school_id — isolasinya sudah dijamin oleh alur approval relasi ortu-siswa
+// per-siswa (parent_student_relations), terlepas dari sekolah.
+model School {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code      String   @unique @db.VarChar(30)
+  name      String   @db.VarChar(150)
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  users            User[]
+  students         Student[]
+  extracurriculars Extracurricular[]
+
+  @@map("schools")
+}
+
+// ============================================
 // 1. ROLES & USERS (Autentikasi & Otorisasi)
 // ============================================
 
@@ -38,6 +61,9 @@ model Role {
 model User {
   id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   roleId       Int       @map("role_id") @db.SmallInt
+  // Hanya terisi untuk ADMIN/PEMBINA (satu sekolah). NULL untuk ORANGTUA
+  // (isolasi lewat relasi per-siswa) dan ADMIN_SUPER (lintas-sekolah).
+  schoolId     String?   @map("school_id") @db.Uuid
   fullName     String    @map("full_name") @db.VarChar(150)
   email        String?   @unique @db.VarChar(150)
   phoneNumber  String?   @unique @map("phone_number") @db.VarChar(20)
@@ -53,6 +79,7 @@ model User {
   updatedAt    DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
   role              Role                    @relation(fields: [roleId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  school            School?                 @relation(fields: [schoolId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   coach             Coach?
   parent            Parent?
   notifications     Notification[]
@@ -63,6 +90,7 @@ model User {
   mfaRecoveryCodes  MfaRecoveryCode[]
 
   @@index([roleId], map: "idx_users_role")
+  @@index([schoolId], map: "idx_users_school")
   @@map("users")
 }
 
@@ -105,7 +133,8 @@ model Coach {
 
 model Student {
   id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  nis              String    @unique @db.VarChar(30) // Nomor Induk Siswa
+  schoolId         String    @map("school_id") @db.Uuid
+  nis              String    @db.VarChar(30) // Nomor Induk Siswa — unik PER SEKOLAH (bukan global lagi)
   fullName         String    @map("full_name") @db.VarChar(150)
   classGrade       String    @map("class_grade") @db.VarChar(20) // contoh: '4A'
   gender           String?   @db.Char(1) // CHECK (gender IN ('L','P')) — di migration
@@ -117,12 +146,15 @@ model Student {
   createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
 
+  school            School                  @relation(fields: [schoolId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   parentRelations   ParentStudentRelation[]
   memberships       ExtracurricularMember[]
   attendanceDetails AttendanceDetail[]
 
+  @@unique([schoolId, nis], map: "students_school_id_nis_key")
   @@index([classGrade], map: "idx_students_class")
   @@index([qrToken], map: "idx_students_qr")
+  @@index([schoolId], map: "idx_students_school")
   @@map("students")
 }
 
@@ -170,6 +202,7 @@ model ParentStudentRelation {
 
 model Extracurricular {
   id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  schoolId       String   @map("school_id") @db.Uuid
   name           String   @db.VarChar(100)
   category       String?  @db.VarChar(50) // 'OLAHRAGA','SENI','AKADEMIK', dst
   description    String?
@@ -178,11 +211,13 @@ model Extracurricular {
   isActive       Boolean  @default(true) @map("is_active")
   createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
 
+  school             School                    @relation(fields: [schoolId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   defaultCoach       Coach?                    @relation("ExtracurricularDefaultCoach", fields: [defaultCoachId], references: [id], onDelete: NoAction, onUpdate: NoAction)
   schedules          ExtracurricularSchedule[]
   members            ExtracurricularMember[]
   attendanceSessions AttendanceSession[]
 
+  @@index([schoolId], map: "idx_ekskul_school")
   @@map("extracurriculars")
 }
 

@@ -18,7 +18,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
-import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import { tenantScope, type AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import type { UploadedFile as UploadedExcelFile } from '../../common/types/uploaded-file.js';
 import { CreateStudentDto } from './dto/create-student.dto.js';
 import { ListStudentsQueryDto } from './dto/list-students-query.dto.js';
@@ -37,14 +37,14 @@ export class StudentsController {
     entityType: 'student',
     captureQuery: ['search', 'classGrade', 'isActive', 'page', 'pageSize'],
   })
-  list(@Query() query: ListStudentsQueryDto) {
-    return this.students.list(query);
+  list(@Query() query: ListStudentsQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.students.list(query, tenantScope(user));
   }
 
   @Get(':id')
   @Audit({ action: 'VIEW_STUDENT_DATA', entityType: 'student', entityIdParam: 'id' })
-  getOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.students.getById(id);
+  getOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.students.getById(id, tenantScope(user));
   }
 
   @Post()
@@ -53,7 +53,7 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.students.create(dto, { id: user.id, ip: ip ?? null });
+    return this.students.create(dto, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Put(':id')
@@ -63,7 +63,7 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.students.update(id, dto, { id: user.id, ip: ip ?? null });
+    return this.students.update(id, dto, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   /** Soft-delete (is_active=false). Tidak menghapus baris. */
@@ -73,7 +73,7 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.students.deactivate(id, { id: user.id, ip: ip ?? null });
+    return this.students.deactivate(id, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Post(':id/reactivate')
@@ -82,7 +82,7 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.students.reactivate(id, { id: user.id, ip: ip ?? null });
+    return this.students.reactivate(id, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   /** Rotasi qr_token (kartu hilang) — token lama langsung tidak berlaku. */
@@ -92,7 +92,7 @@ export class StudentsController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.students.rotateQrToken(id, { id: user.id, ip: ip ?? null });
+    return this.students.rotateQrToken(id, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Post('import')
@@ -111,6 +111,6 @@ export class StudentsController {
     if (!name.endsWith('.xlsx') && !name.endsWith('.xlsm')) {
       throw new BadRequestException('Format harus .xlsx.');
     }
-    return this.students.importFromExcel(file.buffer, { id: user.id, ip: ip ?? null });
+    return this.students.importFromExcel(file.buffer, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 }

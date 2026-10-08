@@ -18,10 +18,13 @@ import type { UpdateStudentDto } from './dto/update-student.dto.js';
 interface Actor {
   id: string;
   ip: string | null;
+  /** Hasil `tenantScope(user)` — `undefined` = ADMIN_SUPER (lintas sekolah). */
+  schoolId: string | undefined;
 }
 
 const PUBLIC_SELECT = {
   id: true,
+  schoolId: true,
   nis: true,
   fullName: true,
   classGrade: true,
@@ -42,7 +45,10 @@ export class StudentsService {
     private readonly audit: AuditService,
   ) {}
 
-  async list(query: ListStudentsQueryDto): Promise<PaginatedResult<unknown>> {
+  async list(
+    query: ListStudentsQueryDto,
+    schoolScope: string | undefined,
+  ): Promise<PaginatedResult<unknown>> {
     const where: Prisma.StudentWhereInput = {};
     if (query.search) {
       where.OR = [
@@ -53,6 +59,7 @@ export class StudentsService {
     if (query.classGrade) where.classGrade = query.classGrade;
     if (query.isActive === 'true') where.isActive = true;
     if (query.isActive === 'false') where.isActive = false;
+    if (schoolScope !== undefined) where.schoolId = schoolScope;
 
     const [total, data] = await this.prisma.$transaction([
       this.prisma.student.count({ where }),
@@ -68,9 +75,9 @@ export class StudentsService {
     return { data, meta: buildPageMeta(query.page, query.pageSize, total) };
   }
 
-  async getById(id: string) {
-    const student = await this.prisma.student.findUnique({
-      where: { id },
+  async getById(id: string, schoolScope: string | undefined) {
+    const student = await this.prisma.student.findFirst({
+      where: { id, ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}) },
       select: PUBLIC_SELECT,
     });
     if (!student) throw new NotFoundException('Siswa tidak ditemukan.');
@@ -78,10 +85,14 @@ export class StudentsService {
   }
 
   async create(dto: CreateStudentDto, actor: Actor) {
-    await this.assertNisAvailable(dto.nis);
+    if (!actor.schoolId) {
+      throw new ConflictException('Operasi ini memerlukan konteks ADMIN sekolah (bukan ADMIN_SUPER).');
+    }
+    await this.assertNisAvailable(actor.schoolId, dto.nis);
 
     const student = await this.prisma.student.create({
       data: {
+        schoolId: actor.schoolId,
         nis: dto.nis,
         fullName: dto.fullName,
         classGrade: dto.classGrade,
@@ -105,8 +116,8 @@ export class StudentsService {
   }
 
   async update(id: string, dto: UpdateStudentDto, actor: Actor) {
-    await this.getById(id); // 404 guard
-    if (dto.nis) await this.assertNisAvailable(dto.nis, id);
+    const existing = await this.getById(id, actor.schoolId); // 404 guard
+    if (dto.nis) await this.assertNisAvailable(existing.schoolId, dto.nis, id);
 
     const student = await this.prisma.student.update({
       where: { id },
@@ -137,7 +148,7 @@ export class StudentsService {
    * historis (attendance_details.student_id) tetap valid secara referensial.
    */
   async deactivate(id: string, actor: Actor) {
-    await this.getById(id);
+    await this.getById(id, actor.schoolId);
     const student = await this.prisma.student.update({
       where: { id },
       data: { isActive: false },
@@ -154,7 +165,7 @@ export class StudentsService {
   }
 
   async reactivate(id: string, actor: Actor) {
-    await this.getById(id);
+    await this.getById(id, actor.schoolId);
     const student = await this.prisma.student.update({
       where: { id },
       data: { isActive: true },
@@ -175,7 +186,7 @@ export class StudentsService {
    * kolom `qr_token` ditimpa nilai acak baru.
    */
   async rotateQrToken(id: string, actor: Actor) {
-    await this.getById(id);
+    await this.getById(id, actor.schoolId);
     const student = await this.prisma.student.update({
       where: { id },
       data: { qrToken: generateQrToken(), qrTokenRotatedAt: new Date() },
@@ -200,6 +211,10 @@ export class StudentsService {
    * dimasukkan dalam satu `createMany` (cepat untuk ratusan baris).
    */
   async importFromExcel(buffer: Buffer, actor: Actor) {
+    if (!actor.schoolId) {
+      throw new ConflictException('Operasi ini memerlukan konteks ADMIN sekolah (bukan ADMIN_SUPER).');
+    }
+    const schoolId = actor.schoolId;
     const workbook = new ExcelJS.Workbook();
     // `as never`: types-only workaround untuk mismatch Buffer (Node 22 @types/node vs
     // tipe Buffer bawaan exceljs). Runtime menerima Buffer dengan benar.
@@ -244,6 +259,7 @@ export class StudentsService {
 
       seenNis.add(nis);
       candidates.push({
+        schoolId,
         nis,
         fullName,
         classGrade,
@@ -253,10 +269,10 @@ export class StudentsService {
       });
     });
 
-    // Buang NIS yang sudah ada di DB.
+    // Buang NIS yang sudah ada di DB (di sekolah yang sama).
     const existing = candidates.length
       ? await this.prisma.student.findMany({
-          where: { nis: { in: candidates.map((c) => c.nis) } },
+          where: { schoolId, nis: { in: candidates.map((c) => c.nis) } },
           select: { nis: true },
         })
       : [];
@@ -292,10 +308,13 @@ export class StudentsService {
 
   // --- helpers ---
 
-  private async assertNisAvailable(nis: string, exceptId?: string) {
-    const found = await this.prisma.student.findUnique({ where: { nis }, select: { id: true } });
+  private async assertNisAvailable(schoolId: string, nis: string, exceptId?: string) {
+    const found = await this.prisma.student.findUnique({
+      where: { schoolId_nis: { schoolId, nis } },
+      select: { id: true },
+    });
     if (found && found.id !== exceptId) {
-      throw new ConflictException(`NIS ${nis} sudah dipakai siswa lain.`);
+      throw new ConflictException(`NIS ${nis} sudah dipakai siswa lain di sekolah ini.`);
     }
   }
 

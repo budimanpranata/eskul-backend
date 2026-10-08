@@ -80,6 +80,7 @@ describe('ParentsService', () => {
         create: vi.fn(),
         update: vi.fn(),
       },
+      school: { findUnique: vi.fn().mockResolvedValue({ id: 'school-1', isActive: true }) },
       student: { findUnique: vi.fn(), findUniqueOrThrow: vi.fn() },
       extracurricularMember: { findMany: vi.fn().mockResolvedValue([]) },
       attendanceDetail: { findMany: vi.fn().mockResolvedValue([]) },
@@ -170,7 +171,7 @@ describe('ParentsService', () => {
     it('NIS tidak ada → 404', async () => {
       prisma.student.findUnique.mockResolvedValue(null);
       await expect(
-        service.linkRequest({ nis: 'X', studentName: 'a' } as any, { userId: 'u1', ip: null }),
+        service.linkRequest({ schoolCode: 'SD-DEFAULT', nis: 'X', studentName: 'a' } as any, { userId: 'u1', ip: null }),
       ).rejects.toThrowError(/tidak ditemukan/);
     });
 
@@ -178,7 +179,7 @@ describe('ParentsService', () => {
       prisma.student.findUnique.mockResolvedValue({ id: 's1', fullName: 'Budi Santoso', isActive: true });
       await expect(
         service.linkRequest(
-          { nis: 'N1', studentName: 'Andi Wijaya' } as any,
+          { schoolCode: 'SD-DEFAULT', nis: 'N1', studentName: 'Andi Wijaya' } as any,
           { userId: 'u1', ip: null },
         ),
       ).rejects.toThrowError(/tidak cocok/);
@@ -189,7 +190,7 @@ describe('ParentsService', () => {
       prisma.parentStudentRelation.findUnique.mockResolvedValue(null);
       prisma.parentStudentRelation.create.mockResolvedValue({ id: 'rel-1' });
       const res = await service.linkRequest(
-        { nis: 'N1', studentName: 'budi' } as any,
+        { schoolCode: 'SD-DEFAULT', nis: 'N1', studentName: 'budi' } as any,
         { userId: 'u1', ip: null },
       );
       expect(res).toMatchObject({ id: 'rel-1', status: 'PENDING' });
@@ -208,7 +209,7 @@ describe('ParentsService', () => {
         approvedAt: new Date(Date.now() - 2 * 3600_000),
       });
       await expect(
-        service.linkRequest({ nis: 'N1', studentName: 'budi' } as any, { userId: 'u1', ip: null }),
+        service.linkRequest({ schoolCode: 'SD-DEFAULT', nis: 'N1', studentName: 'budi' } as any, { userId: 'u1', ip: null }),
       ).rejects.toThrowError(/jam/);
       expect(prisma.parentStudentRelation.update).not.toHaveBeenCalled();
 
@@ -220,7 +221,7 @@ describe('ParentsService', () => {
       });
       prisma.parentStudentRelation.update.mockResolvedValue({});
       const res = await service.linkRequest(
-        { nis: 'N1', studentName: 'budi' } as any,
+        { schoolCode: 'SD-DEFAULT', nis: 'N1', studentName: 'budi' } as any,
         { userId: 'u1', ip: null },
       );
       expect(res.status).toBe('PENDING');
@@ -247,7 +248,7 @@ describe('ParentsService', () => {
         Array.from({ length: 6 }, (_, i) => ({ studentId: `s${i}` })),
       );
 
-      const res = await service.listRelations('PENDING', 1, 20);
+      const res = await service.listRelations('PENDING', 1, 20, undefined);
       expect((res.data as any[])[0].suspicious).toBe(true);
     });
 
@@ -267,7 +268,7 @@ describe('ParentsService', () => {
       ]);
       prisma.parentStudentRelation.findMany.mockResolvedValue([{ studentId: 's1' }, { studentId: 's2' }]);
 
-      const res = await service.listRelations('PENDING', 1, 20);
+      const res = await service.listRelations('PENDING', 1, 20, undefined);
       expect((res.data as any[])[0].suspicious).toBe(false);
     });
   });

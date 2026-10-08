@@ -66,8 +66,17 @@ export class ParentsService {
   async linkRequest(dto: LinkRequestDto, actor: Actor) {
     const parent = await this.getParentOrThrow(actor.userId);
 
+    // NIS kini unik PER SEKOLAH (multi-tenant) — schoolCode wajib untuk disambiguasi.
+    const school = await this.prisma.school.findUnique({
+      where: { code: dto.schoolCode },
+      select: { id: true, isActive: true },
+    });
+    if (!school || !school.isActive) {
+      throw new NotFoundException('Kode sekolah tidak ditemukan.');
+    }
+
     const student = await this.prisma.student.findUnique({
-      where: { nis: dto.nis },
+      where: { schoolId_nis: { schoolId: school.id, nis: dto.nis } },
       select: { id: true, fullName: true, isActive: true },
     });
     if (!student || !student.isActive) {
@@ -296,9 +305,11 @@ export class ParentsService {
     status: string,
     page: number,
     pageSize: number,
+    schoolScope: string | undefined,
   ): Promise<PaginatedResult<unknown>> {
     const where: Prisma.ParentStudentRelationWhereInput = {};
     if (['PENDING', 'APPROVED', 'REJECTED'].includes(status)) where.approvalStatus = status;
+    if (schoolScope !== undefined) where.student = { schoolId: schoolScope };
 
     const [total, rows] = await this.prisma.$transaction([
       this.prisma.parentStudentRelation.count({ where }),
@@ -350,12 +361,19 @@ export class ParentsService {
     return { data, meta: buildPageMeta(page, pageSize, total) };
   }
 
-  async decideRelation(relationId: string, dto: ApproveRelationDto, actor: Actor) {
+  async decideRelation(
+    relationId: string,
+    dto: ApproveRelationDto,
+    actor: Actor,
+    schoolScope: string | undefined,
+  ) {
     const rel = await this.prisma.parentStudentRelation.findUnique({
       where: { id: relationId },
-      select: { id: true, approvalStatus: true },
+      select: { id: true, approvalStatus: true, student: { select: { schoolId: true } } },
     });
-    if (!rel) throw new NotFoundException('Relasi tidak ditemukan.');
+    if (!rel || (schoolScope !== undefined && rel.student.schoolId !== schoolScope)) {
+      throw new NotFoundException('Relasi tidak ditemukan.');
+    }
     if (rel.approvalStatus !== 'PENDING') {
       throw new ConflictException(`Relasi ini sudah berstatus ${rel.approvalStatus}.`);
     }

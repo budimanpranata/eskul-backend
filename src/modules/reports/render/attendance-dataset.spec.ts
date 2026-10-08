@@ -61,7 +61,7 @@ describe('buildAttendanceDataset', () => {
       ],
     });
 
-    const ds = await buildAttendanceDataset(prisma, { dateFrom: '2026-01-01', dateTo: '2026-06-01' });
+    const ds = await buildAttendanceDataset(prisma, { dateFrom: '2026-01-01', dateTo: '2026-06-01' }, undefined);
     expect(ds.rows).toHaveLength(1);
     const r = ds.rows[0];
     expect(r).toMatchObject({
@@ -84,7 +84,7 @@ describe('buildAttendanceDataset', () => {
       sessions: [{ id: 'ses1', extracurricularId: 'e1' }],
       details: [],
     });
-    const ds = await buildAttendanceDataset(prisma, {});
+    const ds = await buildAttendanceDataset(prisma, {}, undefined);
     expect(ds.rows[0]).toMatchObject({
       totalSessions: 1,
       recordedSessions: 0,
@@ -107,7 +107,7 @@ describe('buildAttendanceDataset', () => {
         { sessionId: 'b', studentId: 's1', status: 'ALPA', activenessScore: null, skillNotes: null, personalNotes: null },
       ],
     });
-    const ds = await buildAttendanceDataset(prisma, {});
+    const ds = await buildAttendanceDataset(prisma, {}, undefined);
     const e1 = ds.rows.find((r) => r.extracurricularId === 'e1')!;
     const e2 = ds.rows.find((r) => r.extracurricularId === 'e2')!;
     expect(e1).toMatchObject({ present: 1, alpa: 0, attendancePct: 100 });
@@ -116,7 +116,7 @@ describe('buildAttendanceDataset', () => {
 
   it('meneruskan filter kelas & ekskul ke query member', async () => {
     const prisma = mkPrisma({ members: [] });
-    await buildAttendanceDataset(prisma, { classGrade: '5B', extracurricularId: 'e9' });
+    await buildAttendanceDataset(prisma, { classGrade: '5B', extracurricularId: 'e9' }, undefined);
     const where = (prisma as any).extracurricularMember.findMany.mock.calls[0][0].where;
     expect(where.student.classGrade).toBe('5B');
     expect(where.extracurricular.id).toBe('e9');
@@ -124,7 +124,7 @@ describe('buildAttendanceDataset', () => {
 
   it('tanpa anggota → tidak query sesi/detail, rows kosong', async () => {
     const prisma = mkPrisma({ members: [] });
-    const ds = await buildAttendanceDataset(prisma, {});
+    const ds = await buildAttendanceDataset(prisma, {}, undefined);
     expect(ds.rows).toEqual([]);
     expect((prisma as any).attendanceSession.findMany).not.toHaveBeenCalled();
     expect((prisma as any).attendanceDetail.findMany).not.toHaveBeenCalled();

@@ -21,6 +21,12 @@ export interface AccessTokenPayload {
   type: 'access';
   /** true bila admin ini belum mengaktifkan MFA → akses dibatasi (Fase 4.2). */
   mfaPending?: true;
+  /**
+   * Tenant (sekolah) pemilik akun ini — hanya terisi untuk ADMIN/PEMBINA.
+   * `null`/absen untuk ORANGTUA (isolasi lewat relasi per-siswa) dan
+   * ADMIN_SUPER (operator platform, lintas-sekolah). Klaim `sch` (Fase multi-tenant).
+   */
+  sch?: string | null;
 }
 
 /** Payload di dalam JWT refresh token. */
@@ -42,4 +48,25 @@ export interface AuthenticatedUser {
   role: RoleCode;
   /** true → sesi ini hanya boleh mengakses endpoint setup MFA. */
   mfaPending?: boolean;
+  /** Tenant (sekolah) pemilik akun; `null` untuk ORANGTUA & ADMIN_SUPER. */
+  schoolId: string | null;
+}
+
+/**
+ * UUID yang sengaja tidak pernah dipakai sekolah mana pun — dipakai sebagai
+ * filter "tidak cocok apa pun" (fail-closed) bila akun ADMIN/PEMBINA entah
+ * bagaimana tidak punya `school_id` (seharusnya tidak terjadi setelah
+ * migrasi; ini jaring pengaman, bukan jalur normal).
+ */
+export const NO_MATCH_SCHOOL_ID = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Filter `school_id` yang konsisten untuk query Prisma scoped-tenant:
+ * `undefined` (tanpa filter, lintas-sekolah) HANYA untuk ADMIN_SUPER — ini
+ * operator platform by design, bukan bug. Untuk role lain selalu nilai eksak
+ * `user.schoolId`, atau `NO_MATCH_SCHOOL_ID` (fail-closed, cocok dengan
+ * NOTHING) bila entah bagaimana kosong.
+ */
+export function tenantScope(user: AuthenticatedUser): string | undefined {
+  return user.role === 'ADMIN_SUPER' ? undefined : (user.schoolId ?? NO_MATCH_SCHOOL_ID);
 }

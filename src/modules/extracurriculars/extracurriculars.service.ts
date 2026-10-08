@@ -28,6 +28,8 @@ import type {
 interface Actor {
   id: string;
   ip: string | null;
+  /** Hasil `tenantScope(user)` — `undefined` = ADMIN_SUPER (lintas sekolah). */
+  schoolId: string | undefined;
 }
 
 const DAY_LABELS = ['', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu'];
@@ -50,12 +52,12 @@ export class ExtracurricularsService {
    * Daftar ringkas ekstrakurikuler **aktif** (Fase 4.4). Di-cache Redis 1 jam,
    * di-*bust* pada setiap mutasi ekskul. Dipakai dropdown filter & agregasi.
    */
-  async activeCatalog(): Promise<
+  async activeCatalog(schoolScope: string | undefined): Promise<
     { id: string; name: string; category: string | null; defaultCoachName: string | null }[]
   > {
-    return this.cache.getOrSet(CATALOG_CACHE_KEY, CATALOG_TTL_SECONDS, async () => {
+    return this.cache.getOrSet(this.catalogCacheKey(schoolScope), CATALOG_TTL_SECONDS, async () => {
       const rows = await this.prisma.extracurricular.findMany({
-        where: { isActive: true },
+        where: { isActive: true, ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}) },
         select: {
           id: true,
           name: true,
@@ -73,16 +75,25 @@ export class ExtracurricularsService {
     });
   }
 
-  private bustCatalog(): Promise<void> {
-    return this.cache.bust(CATALOG_CACHE_KEY);
+  /** Key cache per-sekolah — mencegah katalog sekolah A "bocor" ke cache sekolah B. */
+  private catalogCacheKey(schoolScope: string | undefined): string {
+    return `${CATALOG_CACHE_KEY}:${schoolScope ?? 'all'}`;
   }
 
-  async list(query: ListExtracurricularsQueryDto): Promise<PaginatedResult<unknown>> {
+  private bustCatalog(schoolId: string | undefined): Promise<void> {
+    return this.cache.bust(this.catalogCacheKey(schoolId));
+  }
+
+  async list(
+    query: ListExtracurricularsQueryDto,
+    schoolScope: string | undefined,
+  ): Promise<PaginatedResult<unknown>> {
     const where: Prisma.ExtracurricularWhereInput = {};
     if (query.search) where.name = { contains: query.search, mode: 'insensitive' };
     if (query.category) where.category = query.category;
     if (query.isActive === 'true') where.isActive = true;
     if (query.isActive === 'false') where.isActive = false;
+    if (schoolScope !== undefined) where.schoolId = schoolScope;
 
     const [total, rows] = await this.prisma.$transaction([
       this.prisma.extracurricular.count({ where }),
@@ -114,9 +125,9 @@ export class ExtracurricularsService {
     return { data, meta: buildPageMeta(query.page, query.pageSize, total) };
   }
 
-  async getById(id: string) {
-    const row = await this.prisma.extracurricular.findUnique({
-      where: { id },
+  async getById(id: string, schoolScope: string | undefined = undefined) {
+    const row = await this.prisma.extracurricular.findFirst({
+      where: { id, ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}) },
       include: {
         defaultCoach: { include: { user: { select: { fullName: true } } } },
         schedules: { orderBy: [{ dayOfWeek: 'asc' }, { startTime: 'asc' }] },
@@ -148,9 +159,13 @@ export class ExtracurricularsService {
   }
 
   async create(dto: CreateExtracurricularDto, actor: Actor) {
-    if (dto.defaultCoachId) await this.assertCoachExists(dto.defaultCoachId);
+    if (!actor.schoolId) {
+      throw new ConflictException('Operasi ini memerlukan konteks ADMIN sekolah (bukan ADMIN_SUPER).');
+    }
+    if (dto.defaultCoachId) await this.assertCoachExists(dto.defaultCoachId, actor.schoolId);
     const row = await this.prisma.extracurricular.create({
       data: {
+        schoolId: actor.schoolId,
         name: dto.name,
         category: dto.category ?? null,
         description: dto.description ?? null,
@@ -166,13 +181,13 @@ export class ExtracurricularsService {
       ipAddress: actor.ip,
       metadata: { name: row.name },
     });
-    await this.bustCatalog();
+    await this.bustCatalog(actor.schoolId);
     return this.getById(row.id);
   }
 
   async update(id: string, dto: UpdateExtracurricularDto, actor: Actor) {
-    await this.getRawOrThrow(id);
-    if (dto.defaultCoachId) await this.assertCoachExists(dto.defaultCoachId);
+    const existing = await this.getRawOrThrow(id, actor.schoolId);
+    if (dto.defaultCoachId) await this.assertCoachExists(dto.defaultCoachId, existing.schoolId);
     await this.prisma.extracurricular.update({
       where: { id },
       data: {
@@ -191,12 +206,12 @@ export class ExtracurricularsService {
       ipAddress: actor.ip,
       metadata: { fields: definedKeys(dto as Record<string, unknown>) },
     });
-    await this.bustCatalog();
+    await this.bustCatalog(existing.schoolId);
     return this.getById(id);
   }
 
   async deactivate(id: string, actor: Actor) {
-    await this.getRawOrThrow(id);
+    const existing = await this.getRawOrThrow(id, actor.schoolId);
     await this.prisma.extracurricular.update({ where: { id }, data: { isActive: false } });
     await this.audit.log({
       userId: actor.id,
@@ -205,12 +220,12 @@ export class ExtracurricularsService {
       entityId: id,
       ipAddress: actor.ip,
     });
-    await this.bustCatalog();
+    await this.bustCatalog(existing.schoolId);
     return this.getById(id);
   }
 
   async reactivate(id: string, actor: Actor) {
-    await this.getRawOrThrow(id);
+    const existing = await this.getRawOrThrow(id, actor.schoolId);
     await this.prisma.extracurricular.update({ where: { id }, data: { isActive: true } });
     await this.audit.log({
       userId: actor.id,
@@ -219,16 +234,22 @@ export class ExtracurricularsService {
       entityId: id,
       ipAddress: actor.ip,
     });
-    await this.bustCatalog();
+    await this.bustCatalog(existing.schoolId);
     return this.getById(id);
   }
 
   // ============ JADWAL ============
 
   async addSchedule(ekskulId: string, dto: CreateScheduleDto, actor: Actor) {
-    await this.getRawOrThrow(ekskulId);
+    const ekskul = await this.getRawOrThrow(ekskulId, actor.schoolId);
     this.assertTimeOrder(dto.startTime, dto.endTime);
-    await this.assertNoScheduleClash(dto.dayOfWeek, dto.startTime, dto.endTime, dto.location ?? null);
+    await this.assertNoScheduleClash(
+      ekskul.schoolId,
+      dto.dayOfWeek,
+      dto.startTime,
+      dto.endTime,
+      dto.location ?? null,
+    );
 
     const schedule = await this.prisma.extracurricularSchedule.create({
       data: {
@@ -256,6 +277,7 @@ export class ExtracurricularsService {
     dto: UpdateScheduleDto,
     actor: Actor,
   ) {
+    const ekskul = await this.getRawOrThrow(ekskulId, actor.schoolId);
     const current = await this.prisma.extracurricularSchedule.findFirst({
       where: { id: scheduleId, extracurricularId: ekskulId },
     });
@@ -267,7 +289,7 @@ export class ExtracurricularsService {
     const location = dto.location !== undefined ? dto.location : current.location;
 
     this.assertTimeOrder(startTime, endTime);
-    await this.assertNoScheduleClash(dayOfWeek, startTime, endTime, location, scheduleId);
+    await this.assertNoScheduleClash(ekskul.schoolId, dayOfWeek, startTime, endTime, location, scheduleId);
 
     await this.prisma.extracurricularSchedule.update({
       where: { id: scheduleId },
@@ -289,6 +311,7 @@ export class ExtracurricularsService {
   }
 
   async removeSchedule(ekskulId: string, scheduleId: string, actor: Actor) {
+    await this.getRawOrThrow(ekskulId, actor.schoolId);
     const current = await this.prisma.extracurricularSchedule.findFirst({
       where: { id: scheduleId, extracurricularId: ekskulId },
     });
@@ -316,8 +339,9 @@ export class ExtracurricularsService {
     ekskulId: string,
     page: number,
     pageSize: number,
+    schoolScope: string | undefined,
   ): Promise<PaginatedResult<unknown>> {
-    await this.getRawOrThrow(ekskulId);
+    await this.getRawOrThrow(ekskulId, schoolScope);
     const where: Prisma.ExtracurricularMemberWhereInput = { extracurricularId: ekskulId };
     const [total, rows] = await this.prisma.$transaction([
       this.prisma.extracurricularMember.count({ where }),
@@ -343,12 +367,13 @@ export class ExtracurricularsService {
   }
 
   async addMembers(ekskulId: string, dto: AddMembersDto, actor: Actor) {
-    const ekskul = await this.getRawOrThrow(ekskulId);
+    const ekskul = await this.getRawOrThrow(ekskulId, actor.schoolId);
     const ids = [...new Set(dto.studentIds)];
     if (ids.length === 0) throw new BadRequestException('Tidak ada siswa yang dipilih.');
 
+    // Scoped ke sekolah ekskul ini — siswa sekolah lain otomatis "tidak ditemukan".
     const students = await this.prisma.student.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: ids }, schoolId: ekskul.schoolId },
       select: { id: true, isActive: true },
     });
     const foundIds = new Set(students.map((s) => s.id));
@@ -401,6 +426,7 @@ export class ExtracurricularsService {
   }
 
   async removeMember(ekskulId: string, studentId: string, actor: Actor) {
+    await this.getRawOrThrow(ekskulId, actor.schoolId);
     const member = await this.prisma.extracurricularMember.findUnique({
       where: { extracurricularId_studentId: { extracurricularId: ekskulId, studentId } },
       select: { id: true },
@@ -421,15 +447,23 @@ export class ExtracurricularsService {
 
   // --- helpers ---
 
-  private async getRawOrThrow(id: string) {
-    const row = await this.prisma.extracurricular.findUnique({ where: { id } });
+  private async getRawOrThrow(id: string, schoolScope: string | undefined) {
+    const row = await this.prisma.extracurricular.findFirst({
+      where: { id, ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}) },
+    });
     if (!row) throw new NotFoundException('Ekstrakurikuler tidak ditemukan.');
     return row;
   }
 
-  private async assertCoachExists(coachId: string) {
-    const coach = await this.prisma.coach.findUnique({ where: { id: coachId }, select: { id: true } });
-    if (!coach) throw new BadRequestException('Pembina default tidak ditemukan.');
+  /** `schoolId` di sini WAJIB nilai eksak (sekolah si ekskul) — bukan hasil `tenantScope`. */
+  private async assertCoachExists(coachId: string, schoolId: string) {
+    const coach = await this.prisma.coach.findUnique({
+      where: { id: coachId },
+      select: { id: true, user: { select: { schoolId: true } } },
+    });
+    if (!coach || coach.user.schoolId !== schoolId) {
+      throw new BadRequestException('Pembina default tidak ditemukan di sekolah ini.');
+    }
   }
 
   private assertTimeOrder(start: string, end: string) {
@@ -443,6 +477,7 @@ export class ExtracurricularsService {
    * Bandingkan hanya jadwal aktif, hari yang sama, lokasi persis sama (non-null).
    */
   private async assertNoScheduleClash(
+    schoolId: string,
     dayOfWeek: number,
     start: string,
     end: string,
@@ -450,12 +485,15 @@ export class ExtracurricularsService {
     exceptScheduleId?: string,
   ) {
     if (!location) return; // tanpa lokasi tidak ada konsep "bentrok tempat"
+    // Bentrok dicek PER SEKOLAH — lokasi dengan nama sama di sekolah lain bukan
+    // tempat fisik yang sama (shared-DB multi-tenant).
     const sameSlot = await this.prisma.extracurricularSchedule.findMany({
       where: {
         isActive: true,
         dayOfWeek,
         location,
         id: exceptScheduleId ? { not: exceptScheduleId } : undefined,
+        extracurricular: { schoolId },
       },
       include: { extracurricular: { select: { name: true } } },
     });

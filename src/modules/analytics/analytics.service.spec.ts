@@ -64,7 +64,7 @@ describe('AnalyticsService.overview', () => {
     expect(res.cached).toBe(false);
     expect(res.kpi.activeStudents).toBe(10);
     expect(redis.client.set).toHaveBeenCalledWith(
-      ANALYTICS_CACHE_KEY,
+      `${ANALYTICS_CACHE_KEY}:all`,
       expect.any(String),
       'EX',
       3600,
@@ -73,7 +73,7 @@ describe('AnalyticsService.overview', () => {
 
   it('cache HIT → mengembalikan payload cache, cached:true, tanpa query DB', async () => {
     const prisma = makePrisma({});
-    redis._store.set(ANALYTICS_CACHE_KEY, JSON.stringify({ kpi: { activeStudents: 99 } }));
+    redis._store.set(`${ANALYTICS_CACHE_KEY}:all`, JSON.stringify({ kpi: { activeStudents: 99 } }));
     const svc = new AnalyticsService(prisma, redis);
 
     const res = await svc.overview();
@@ -85,7 +85,7 @@ describe('AnalyticsService.overview', () => {
 
   it('fresh:true → melewati cache walau ada isinya', async () => {
     const prisma = makePrisma({ activeStudents: 7 });
-    redis._store.set(ANALYTICS_CACHE_KEY, JSON.stringify({ kpi: { activeStudents: 99 } }));
+    redis._store.set(`${ANALYTICS_CACHE_KEY}:all`, JSON.stringify({ kpi: { activeStudents: 99 } }));
     const svc = new AnalyticsService(prisma, redis);
 
     const res = await svc.overview({ fresh: true });

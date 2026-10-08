@@ -20,6 +20,15 @@ export class ListRelationsQueryDto extends PaginationQueryDto {
 
 /** POST /parent/link-request — ajukan relasi ke seorang siswa (butuh approval admin). */
 export class LinkRequestDto {
+  /**
+   * Kode sekolah (multi-tenant) — NIS kini unik PER SEKOLAH, bukan global,
+   * sehingga wajib disertakan untuk mendisambiguasi siswa yang dituju.
+   */
+  @IsString()
+  @IsNotEmpty({ message: 'Kode sekolah wajib diisi.' })
+  @MaxLength(30)
+  schoolCode!: string;
+
   @IsString()
   @IsNotEmpty({ message: 'NIS wajib diisi.' })
   @MaxLength(30)

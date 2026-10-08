@@ -21,6 +21,7 @@ import { ReportsModule } from './modules/reports/reports.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { PeriodicReportsModule } from './modules/periodic-reports/periodic-reports.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
+import { SchoolsModule } from './modules/schools/schools.module.js';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { AuditModule } from './modules/audit/audit.module.js';
     AnalyticsModule,
     PeriodicReportsModule,
     AuditModule,
+    SchoolsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

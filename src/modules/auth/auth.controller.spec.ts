@@ -39,13 +39,13 @@ describe('AuthController', () => {
   });
 
   it('POST /auth/logout memakai id dari CurrentUser', async () => {
-    const user: AuthenticatedUser = { id: 'u1', role: 'ADMIN' };
+    const user: AuthenticatedUser = { id: 'u1', role: 'ADMIN', schoolId: 'school-1' };
     await controller.logout(user, '1.2.3.4');
     expect(authService.logout).toHaveBeenCalledWith('u1', '1.2.3.4');
   });
 
   it('GET /auth/me mengambil profil user login', async () => {
-    await controller.me({ id: 'u1', role: 'PEMBINA' });
+    await controller.me({ id: 'u1', role: 'PEMBINA', schoolId: 'school-1' });
     expect(authService.getProfile).toHaveBeenCalledWith('u1');
   });
 });

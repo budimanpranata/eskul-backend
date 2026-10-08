@@ -17,7 +17,7 @@ export interface AuthResult {
   refreshToken: string;
   tokenType: 'Bearer';
   expiresIn: number;
-  user: { id: string; fullName: string; role: RoleCode };
+  user: { id: string; fullName: string; role: RoleCode; schoolId: string | null };
   /** true → admin ini wajib menyelesaikan setup MFA sebelum mengakses fitur lain. */
   mfaSetupRequired?: boolean;
 }
@@ -41,7 +41,7 @@ export class AuthService {
   async login(dto: LoginDto, ip: string | null): Promise<AuthResult | MfaChallengeResult> {
     const user = await this.prisma.user.findFirst({
       where: { OR: [{ email: dto.identifier }, { phoneNumber: dto.identifier }] },
-      include: { role: true },
+      include: { role: true, school: { select: { isActive: true } } },
     });
 
     if (!user) {
@@ -63,6 +63,20 @@ export class AuthService {
         entityId: user.id,
         ipAddress: ip,
         metadata: { identifier: dto.identifier, reason: 'USER_INACTIVE' },
+      });
+      throw new UnauthorizedException(GENERIC_LOGIN_ERROR);
+    }
+
+    // Sekolah disuspend (ADMIN_SUPER) → tolak login ADMIN/PEMBINA sekolah ini,
+    // walau akun user sendiri masih is_active=true.
+    if (user.school && !user.school.isActive) {
+      await this.audit.log({
+        userId: user.id,
+        action: 'LOGIN_FAILED',
+        entityType: 'user',
+        entityId: user.id,
+        ipAddress: ip,
+        metadata: { identifier: dto.identifier, reason: 'SCHOOL_SUSPENDED' },
       });
       throw new UnauthorizedException(GENERIC_LOGIN_ERROR);
     }
@@ -99,7 +113,7 @@ export class AuthService {
 
     // Admin tanpa MFA + enforcement menyala → sesi "pending" (akses dibatasi).
     const mfaPending = this.mfa.mfaPendingFor(role, user.mfaEnabled);
-    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending });
+    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending, schoolId: user.schoolId });
 
     await this.prisma.user.update({
       where: { id: user.id },
@@ -120,7 +134,7 @@ export class AuthService {
       refreshToken: issued.refreshToken,
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
-      user: { id: user.id, fullName: user.fullName, role },
+      user: { id: user.id, fullName: user.fullName, role, schoolId: user.schoolId },
       // Hanya "wajib" bila enforcement menyala (mfaPending sudah mencakup
       // isEnforced && admin && !mfaEnabled). Bila MFA_ENFORCE_ADMIN=false,
       // admin tetap bisa mengaktifkan MFA manual lewat halaman Keamanan.
@@ -156,7 +170,7 @@ export class AuthService {
     }
 
     const role = user.role.code as RoleCode;
-    const issued = await this.tokens.issueTokens(user.id, role); // MFA lolos → sesi penuh
+    const issued = await this.tokens.issueTokens(user.id, role, { schoolId: user.schoolId }); // MFA lolos → sesi penuh
     await this.prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
     await this.audit.log({
       userId: user.id,
@@ -172,7 +186,7 @@ export class AuthService {
       refreshToken: issued.refreshToken,
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
-      user: { id: user.id, fullName: user.fullName, role },
+      user: { id: user.id, fullName: user.fullName, role, schoolId: user.schoolId },
     };
   }
 
@@ -186,10 +200,11 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { id: payload.sub },
-      include: { role: true },
+      include: { role: true, school: { select: { isActive: true } } },
     });
-    if (!user || !user.isActive) {
-      // Sesi menggantung untuk user yang sudah dinonaktifkan → cabut.
+    if (!user || !user.isActive || (user.school && !user.school.isActive)) {
+      // Sesi menggantung untuk user yang sudah dinonaktifkan (atau sekolahnya
+      // disuspend ADMIN_SUPER) → cabut.
       await this.tokens.revokeSession(payload.sub, payload.jti);
       throw new UnauthorizedException('Sesi tidak dikenal atau sudah dicabut.');
     }
@@ -199,7 +214,7 @@ export class AuthService {
     const role = user.role.code as RoleCode;
     // Hitung ulang status pending: sekali MFA aktif, refresh berikutnya lepas flag.
     const mfaPending = this.mfa.mfaPendingFor(role, user.mfaEnabled);
-    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending });
+    const issued = await this.tokens.issueTokens(user.id, role, { mfaPending, schoolId: user.schoolId });
 
     await this.audit.log({
       userId: user.id,
@@ -214,7 +229,7 @@ export class AuthService {
       refreshToken: issued.refreshToken,
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
-      user: { id: user.id, fullName: user.fullName, role },
+      user: { id: user.id, fullName: user.fullName, role, schoolId: user.schoolId },
       ...(mfaPending ? { mfaSetupRequired: true } : {}),
     };
   }
@@ -247,7 +262,7 @@ export class AuthService {
     const role = user.role.code as RoleCode;
     // Cabut sesi lama (yang mungkin ber-flag pending) lalu terbitkan yang bersih.
     await this.tokens.revokeAllSessions(userId);
-    const issued = await this.tokens.issueTokens(userId, role);
+    const issued = await this.tokens.issueTokens(userId, role, { schoolId: user.schoolId });
     await this.audit.log({
       userId,
       action: 'MFA_ENABLED',
@@ -261,7 +276,7 @@ export class AuthService {
       refreshToken: issued.refreshToken,
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
-      user: { id: user.id, fullName: user.fullName, role },
+      user: { id: user.id, fullName: user.fullName, role, schoolId: user.schoolId },
       recoveryCodes,
     };
   }
@@ -350,20 +365,20 @@ export class AuthService {
       ipAddress: ip,
     });
 
-    const issued = await this.tokens.issueTokens(user.id, 'ORANGTUA');
+    const issued = await this.tokens.issueTokens(user.id, 'ORANGTUA', { schoolId: null });
     return {
       accessToken: issued.accessToken,
       refreshToken: issued.refreshToken,
       tokenType: 'Bearer',
       expiresIn: issued.expiresInSeconds,
-      user: { id: user.id, fullName: user.fullName, role: 'ORANGTUA' },
+      user: { id: user.id, fullName: user.fullName, role: 'ORANGTUA', schoolId: null },
     };
   }
 
   async getProfile(userId: string) {
     const user = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
-      include: { role: true },
+      include: { role: true, school: { select: { id: true, name: true } } },
     });
     return {
       id: user.id,
@@ -374,6 +389,8 @@ export class AuthService {
       isActive: user.isActive,
       mfaEnabled: user.mfaEnabled,
       lastLoginAt: user.lastLoginAt,
+      schoolId: user.schoolId,
+      schoolName: user.school?.name ?? null,
     };
   }
 }

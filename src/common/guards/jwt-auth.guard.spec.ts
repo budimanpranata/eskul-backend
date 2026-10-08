@@ -42,11 +42,11 @@ describe('JwtAuthGuard', () => {
 
   it('token akses valid → menempelkan { id, role } ke request.user', async () => {
     vi.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jwt.verifyAsync.mockResolvedValue({ sub: 'user-9', role: 'ADMIN', type: 'access' });
+    jwt.verifyAsync.mockResolvedValue({ sub: 'user-9', role: 'ADMIN', type: 'access', sch: 'school-1' });
     const { context, req } = ctx({ authorization: 'Bearer good.token' });
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect(req.user).toEqual({ id: 'user-9', role: 'ADMIN', mfaPending: false });
+    expect(req.user).toEqual({ id: 'user-9', role: 'ADMIN', mfaPending: false, schoolId: 'school-1' });
   });
 
   it('tanpa header Authorization → UnauthorizedException', async () => {

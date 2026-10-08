@@ -42,12 +42,13 @@ export class TokenService {
   async issueTokens(
     userId: string,
     role: RoleCode,
-    opts: { mfaPending?: boolean } = {},
+    opts: { mfaPending?: boolean; schoolId?: string | null } = {},
   ): Promise<IssuedTokens> {
     const jti = randomUUID();
 
     const accessPayload: AccessTokenPayload = { sub: userId, role, type: 'access' };
     if (opts.mfaPending) accessPayload.mfaPending = true;
+    if (opts.schoolId !== undefined) accessPayload.sch = opts.schoolId;
 
     const accessToken = await this.jwt.signAsync(accessPayload, {
       secret: this.config.get<string>('jwt.accessSecret'),

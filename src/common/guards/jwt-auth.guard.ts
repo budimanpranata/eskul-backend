@@ -56,6 +56,7 @@ export class JwtAuthGuard implements CanActivate {
       id: payload.sub,
       role: payload.role,
       mfaPending: payload.mfaPending === true,
+      schoolId: payload.sch ?? null,
     };
     (request as Request & { user: AuthenticatedUser }).user = user;
     return true;

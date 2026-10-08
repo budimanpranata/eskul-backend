@@ -88,18 +88,31 @@ function lastMonday(): Date {
   return d;
 }
 
-async function seedRolesAndAdmins() {
+const DEFAULT_SCHOOL = { code: 'SD-DEFAULT', name: 'Sekolah Default' };
+
+async function seedDefaultSchool() {
+  return prisma.school.upsert({
+    where: { code: DEFAULT_SCHOOL.code },
+    update: { name: DEFAULT_SCHOOL.name },
+    create: DEFAULT_SCHOOL,
+  });
+}
+
+async function seedRolesAndAdmins(schoolId: string) {
   for (const role of ROLES) {
     await prisma.role.upsert({ where: { code: role.code }, update: { name: role.name }, create: role });
   }
   for (const admin of DUMMY_ADMINS) {
     const role = await prisma.role.findUniqueOrThrow({ where: { code: admin.roleCode } });
     const passwordHash = await argon2.hash(admin.password, { type: argon2.argon2id });
+    // ADMIN terikat ke sekolah default; ADMIN_SUPER tetap lintas-sekolah (schoolId null).
+    const rowSchoolId = admin.roleCode === 'ADMIN' ? schoolId : null;
     await prisma.user.upsert({
       where: { email: admin.email },
-      update: { roleId: role.id },
+      update: { roleId: role.id, schoolId: rowSchoolId },
       create: {
         roleId: role.id,
+        schoolId: rowSchoolId,
         fullName: admin.fullName,
         email: admin.email,
         phoneNumber: admin.phoneNumber,
@@ -110,14 +123,19 @@ async function seedRolesAndAdmins() {
   }
 }
 
-async function upsertUser(roleCode: string, u: { fullName: string; email: string; phoneNumber: string; password: string }) {
+async function upsertUser(
+  roleCode: string,
+  u: { fullName: string; email: string; phoneNumber: string; password: string },
+  schoolId: string | null,
+) {
   const role = await prisma.role.findUniqueOrThrow({ where: { code: roleCode } });
   const passwordHash = await argon2.hash(u.password, { type: argon2.argon2id });
   return prisma.user.upsert({
     where: { email: u.email },
-    update: { roleId: role.id, fullName: u.fullName, phoneNumber: u.phoneNumber, isActive: true },
+    update: { roleId: role.id, fullName: u.fullName, phoneNumber: u.phoneNumber, isActive: true, schoolId },
     create: {
       roleId: role.id,
+      schoolId,
       fullName: u.fullName,
       email: u.email,
       phoneNumber: u.phoneNumber,
@@ -127,9 +145,9 @@ async function upsertUser(roleCode: string, u: { fullName: string; email: string
   });
 }
 
-async function seedDemoFixture() {
-  // --- Pembina + profil Coach ---
-  const coachUser = await upsertUser('PEMBINA', DUMMY_COACH);
+async function seedDemoFixture(schoolId: string) {
+  // --- Pembina + profil Coach (terikat sekolah default) ---
+  const coachUser = await upsertUser('PEMBINA', DUMMY_COACH, schoolId);
   const coach = await prisma.coach.upsert({
     where: { userId: coachUser.id },
     update: { specialization: DUMMY_COACH.specialization },
@@ -140,8 +158,8 @@ async function seedDemoFixture() {
     },
   });
 
-  // --- Orang Tua + profil Parent ---
-  const parentUser = await upsertUser('ORANGTUA', DUMMY_PARENT);
+  // --- Orang Tua + profil Parent (ORANGTUA tidak terikat sekolah) ---
+  const parentUser = await upsertUser('ORANGTUA', DUMMY_PARENT, null);
   const parent = await prisma.parent.upsert({
     where: { userId: parentUser.id },
     update: { relationType: DUMMY_PARENT.relationType, identityVerified: true },
@@ -153,17 +171,18 @@ async function seedDemoFixture() {
   for (const s of DUMMY_STUDENTS) {
     students.push(
       await prisma.student.upsert({
-        where: { nis: s.nis },
+        where: { schoolId_nis: { schoolId, nis: s.nis } },
         update: { fullName: s.fullName, classGrade: s.classGrade, gender: s.gender, isActive: true },
-        create: { ...s, isActive: true },
+        create: { ...s, schoolId, isActive: true },
       }),
     );
   }
 
   // --- Ekskul (tanpa unique alami → findFirst + create) ---
-  let ekskul = await prisma.extracurricular.findFirst({ where: { name: DUMMY_EKSKUL.name } });
+  let ekskul = await prisma.extracurricular.findFirst({ where: { name: DUMMY_EKSKUL.name, schoolId } });
   ekskul ??= await prisma.extracurricular.create({
     data: {
+      schoolId,
       name: DUMMY_EKSKUL.name,
       category: DUMMY_EKSKUL.category,
       description: DUMMY_EKSKUL.description,
@@ -265,8 +284,9 @@ async function seedDemoFixture() {
 }
 
 async function main() {
-  await seedRolesAndAdmins();
-  const { sessionDate } = await seedDemoFixture();
+  const school = await seedDefaultSchool();
+  await seedRolesAndAdmins(school.id);
+  const { sessionDate } = await seedDemoFixture(school.id);
 
   const creds = [
     ...DUMMY_ADMINS.map((a) => `${a.email} / ${a.password}`),

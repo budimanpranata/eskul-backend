@@ -76,9 +76,18 @@ export class AnalyticsService {
     private readonly redis: RedisService,
   ) {}
 
-  async overview(opts: { fresh?: boolean } = {}): Promise<OverviewPayload & { cached: boolean }> {
+  /** Key cache per-sekolah — mencegah angka sekolah A "bocor" ke cache sekolah B. */
+  private cacheKey(schoolScope: string | undefined): string {
+    return `${ANALYTICS_CACHE_KEY}:${schoolScope ?? 'all'}`;
+  }
+
+  async overview(
+    opts: { fresh?: boolean } = {},
+    schoolScope: string | undefined = undefined,
+  ): Promise<OverviewPayload & { cached: boolean }> {
+    const cacheKey = this.cacheKey(schoolScope);
     if (!opts.fresh) {
-      const cached = await this.redis.client.get(ANALYTICS_CACHE_KEY).catch(() => null);
+      const cached = await this.redis.client.get(cacheKey).catch(() => null);
       if (cached) {
         try {
           return { ...(JSON.parse(cached) as OverviewPayload), cached: true };
@@ -88,27 +97,31 @@ export class AnalyticsService {
       }
     }
 
-    const data = await this.compute();
+    const data = await this.compute(schoolScope);
     await this.redis.client
-      .set(ANALYTICS_CACHE_KEY, JSON.stringify(data), 'EX', ANALYTICS_CACHE_TTL_SECONDS)
+      .set(cacheKey, JSON.stringify(data), 'EX', ANALYTICS_CACHE_TTL_SECONDS)
       .catch((err: Error) => this.logger.warn(`Gagal menulis cache analitik: ${err.message}`));
     return { ...data, cached: false };
   }
 
-  private async compute(): Promise<OverviewPayload> {
+  private async compute(schoolScope: string | undefined): Promise<OverviewPayload> {
     const toStr = jakartaToday();
     const toDate = new Date(`${toStr}T00:00:00.000Z`);
     const currentMonday = mondayOfWeekUTC(toDate);
     const fromDate = new Date(currentMonday.getTime() - (TREND_WEEKS - 1) * 7 * DAY_MS);
     const fromStr = fromDate.toISOString().slice(0, 10);
 
+    const schoolFilter = schoolScope !== undefined ? { schoolId: schoolScope } : {};
     const [ekskuls, memberships, details, activeStudents, pendingRelations] = await Promise.all([
       this.prisma.extracurricular.findMany({
-        where: { isActive: true },
+        where: { isActive: true, ...schoolFilter },
         select: { id: true, name: true, category: true },
       }),
       this.prisma.extracurricularMember.findMany({
-        where: { student: { isActive: true }, extracurricular: { isActive: true } },
+        where: {
+          student: { isActive: true, ...schoolFilter },
+          extracurricular: { isActive: true, ...schoolFilter },
+        },
         select: { studentId: true, extracurricularId: true, extracurricular: { select: { category: true } } },
       }),
       this.prisma.attendanceDetail.findMany({
@@ -116,6 +129,7 @@ export class AnalyticsService {
           session: {
             status: { in: ['SUBMITTED', 'SYNCED'] },
             sessionDate: { gte: fromDate, lte: toDate },
+            ...(schoolScope !== undefined ? { extracurricular: { schoolId: schoolScope } } : {}),
           },
         },
         select: {
@@ -124,8 +138,13 @@ export class AnalyticsService {
           session: { select: { id: true, sessionDate: true, extracurricularId: true } },
         },
       }),
-      this.prisma.student.count({ where: { isActive: true } }),
-      this.prisma.parentStudentRelation.count({ where: { approvalStatus: 'PENDING' } }),
+      this.prisma.student.count({ where: { isActive: true, ...schoolFilter } }),
+      this.prisma.parentStudentRelation.count({
+        where: {
+          approvalStatus: 'PENDING',
+          ...(schoolScope !== undefined ? { student: { schoolId: schoolScope } } : {}),
+        },
+      }),
     ]);
 
     return {
@@ -134,7 +153,7 @@ export class AnalyticsService {
       kpi: this.buildKpi(ekskuls, memberships, details, activeStudents, pendingRelations),
       participationByCategory: this.buildParticipation(ekskuls, memberships),
       attendanceTrend: this.buildTrend(details, currentMonday),
-      lowAttendanceByExtracurricular: await this.buildLowAttendance(details, ekskuls),
+      lowAttendanceByExtracurricular: await this.buildLowAttendance(details, ekskuls, schoolScope),
     };
   }
 
@@ -220,6 +239,7 @@ export class AnalyticsService {
       session: { extracurricularId: string };
     }[],
     ekskuls: { id: string; name: string }[],
+    schoolScope: string | undefined,
   ): Promise<OverviewPayload['lowAttendanceByExtracurricular']> {
     // Agregasi kehadiran per (ekskul, siswa) di window.
     const agg = new Map<string, { present: number; recorded: number }>();
@@ -258,7 +278,10 @@ export class AnalyticsService {
 
     const students = neededStudentIds.size
       ? await this.prisma.student.findMany({
-          where: { id: { in: [...neededStudentIds] } },
+          where: {
+            id: { in: [...neededStudentIds] },
+            ...(schoolScope !== undefined ? { schoolId: schoolScope } : {}),
+          },
           select: { id: true, nis: true, fullName: true, classGrade: true },
         })
       : [];

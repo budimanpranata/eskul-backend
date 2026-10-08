@@ -14,7 +14,7 @@ import {
 import { Audit } from '../../common/decorators/audit.decorator.js';
 import { CurrentUser } from '../../common/decorators/current-user.decorator.js';
 import { Roles } from '../../common/decorators/roles.decorator.js';
-import type { AuthenticatedUser } from '../../common/types/authenticated-user.js';
+import { tenantScope, type AuthenticatedUser } from '../../common/types/authenticated-user.js';
 import { CoachesService } from './coaches.service.js';
 import { CreateCoachDto } from './dto/create-coach.dto.js';
 import { ListCoachesQueryDto } from './dto/list-coaches-query.dto.js';
@@ -28,19 +28,19 @@ export class CoachesController {
 
   @Get()
   @Audit({ action: 'LIST_COACHES', entityType: 'coach', captureQuery: ['search', 'isActive'] })
-  list(@Query() query: ListCoachesQueryDto) {
-    return this.coaches.list(query);
+  list(@Query() query: ListCoachesQueryDto, @CurrentUser() user: AuthenticatedUser) {
+    return this.coaches.list(query, tenantScope(user));
   }
 
   @Get(':id')
   @Audit({ action: 'VIEW_COACH_DATA', entityType: 'coach', entityIdParam: 'id' })
-  getOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.coaches.getById(id);
+  getOne(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthenticatedUser) {
+    return this.coaches.getById(id, tenantScope(user));
   }
 
   @Post()
   create(@Body() dto: CreateCoachDto, @CurrentUser() user: AuthenticatedUser, @Ip() ip: string) {
-    return this.coaches.create(dto, { id: user.id, ip: ip ?? null });
+    return this.coaches.create(dto, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Put(':id')
@@ -50,7 +50,7 @@ export class CoachesController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.coaches.update(id, dto, { id: user.id, ip: ip ?? null });
+    return this.coaches.update(id, dto, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Delete(':id')
@@ -59,7 +59,7 @@ export class CoachesController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.coaches.deactivate(id, { id: user.id, ip: ip ?? null });
+    return this.coaches.deactivate(id, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 
   @Post(':id/reactivate')
@@ -68,6 +68,6 @@ export class CoachesController {
     @CurrentUser() user: AuthenticatedUser,
     @Ip() ip: string,
   ) {
-    return this.coaches.reactivate(id, { id: user.id, ip: ip ?? null });
+    return this.coaches.reactivate(id, { id: user.id, ip: ip ?? null, schoolId: tenantScope(user) });
   }
 }
