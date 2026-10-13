@@ -88,6 +88,9 @@ model User {
   deviceTokens      DeviceToken[]
   reportExports     ReportExport[]
   mfaRecoveryCodes  MfaRecoveryCode[]
+  invoicesCreated   Invoice[]               @relation("InvoiceCreatedBy")
+  paymentsSubmitted Payment[]               @relation("PaymentSubmittedBy")
+  paymentsVerified  Payment[]               @relation("PaymentVerifiedBy")
 
   @@index([roleId], map: "idx_users_role")
   @@index([schoolId], map: "idx_users_school")
@@ -150,6 +153,7 @@ model Student {
   parentRelations   ParentStudentRelation[]
   memberships       ExtracurricularMember[]
   attendanceDetails AttendanceDetail[]
+  invoices          Invoice[]
 
   @@unique([schoolId, nis], map: "students_school_id_nis_key")
   @@index([classGrade], map: "idx_students_class")
@@ -216,6 +220,7 @@ model Extracurricular {
   schedules          ExtracurricularSchedule[]
   members            ExtracurricularMember[]
   attendanceSessions AttendanceSession[]
+  invoices           Invoice[]
 
   @@index([schoolId], map: "idx_ekskul_school")
   @@map("extracurriculars")
@@ -397,4 +402,66 @@ model ReportExport {
   @@index([requestedById], map: "idx_report_exports_user")
   @@index([status], map: "idx_report_exports_status")
   @@map("report_exports")
+}
+
+// ============================================
+// 10. TAGIHAN EKSKUL (billing — beyond-plan)
+// ============================================
+
+// Satu baris = satu tagihan untuk satu siswa (opsional terikat satu ekskul
+// tertentu, atau tagihan umum bila `extracurricular_id` NULL). Tidak ada di
+// DDL asli. Tabel anak (child) — TIDAK punya `school_id` sendiri, tenancy
+// diwarisi lewat `student.school_id` / `extracurricular.school_id`, konsisten
+// dengan pola yang sudah dipakai attendance_sessions dkk (lihat MULTI-TENANT.md).
+model Invoice {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  studentId         String    @map("student_id") @db.Uuid
+  extracurricularId String?   @map("extracurricular_id") @db.Uuid
+  period            String    @db.VarChar(20) // mis. '2026-10' — bebas (bukan selalu bulan kalender)
+  title             String    @db.VarChar(150) // mis. 'SPP Futsal Oktober 2026'
+  amount            Int // rupiah bulat (bukan Decimal — tidak ada sen)
+  dueDate           DateTime? @map("due_date") @db.Date
+  status            String    @default("UNPAID") @db.VarChar(20) // UNPAID/PENDING_VERIFICATION/PAID/CANCELLED
+  notes             String?
+  createdById       String    @map("created_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt         DateTime  @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  student         Student          @relation(fields: [studentId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  extracurricular Extracurricular? @relation(fields: [extracurricularId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  createdBy       User             @relation("InvoiceCreatedBy", fields: [createdById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payments        Payment[]
+
+  @@unique([studentId, extracurricularId, period], map: "invoices_student_ekskul_period_key")
+  @@index([studentId], map: "idx_invoices_student")
+  @@index([extracurricularId], map: "idx_invoices_ekskul")
+  @@index([status], map: "idx_invoices_status")
+  @@index([period], map: "idx_invoices_period")
+  @@map("billing_invoices")
+}
+
+// Satu baris = satu klaim pembayaran (transfer/cash) yang diajukan ortu untuk
+// satu tagihan, menunggu validasi admin. Satu invoice bisa punya beberapa
+// payment (klaim ditolak → ortu ajukan ulang).
+model Payment {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  invoiceId       String    @map("invoice_id") @db.Uuid
+  method          String    @db.VarChar(20) // TRANSFER | CASH
+  amount          Int
+  proofKey        String?   @map("proof_key") // storage key gambar bukti transfer (disk lokal)
+  note            String?
+  status          String    @default("PENDING") @db.VarChar(20) // PENDING/APPROVED/REJECTED
+  submittedById   String    @map("submitted_by") @db.Uuid
+  submittedAt     DateTime  @default(now()) @map("submitted_at") @db.Timestamptz(6)
+  verifiedById    String?   @map("verified_by") @db.Uuid
+  verifiedAt      DateTime? @map("verified_at") @db.Timestamptz(6)
+  rejectionReason String?   @map("rejection_reason")
+
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  submittedBy User    @relation("PaymentSubmittedBy", fields: [submittedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  verifiedBy  User?   @relation("PaymentVerifiedBy", fields: [verifiedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([invoiceId], map: "idx_payments_invoice")
+  @@index([status], map: "idx_payments_status")
+  @@map("billing_payments")
 }

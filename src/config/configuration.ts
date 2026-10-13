@@ -44,6 +44,15 @@ export default () => ({
     signingSecret: process.env.REPORT_SIGNING_SECRET || process.env.JWT_ACCESS_SECRET,
   },
 
+  billing: {
+    // Direktori lokal untuk bukti transfer yang diunggah ortu (gambar).
+    proofStorageDir: process.env.BILLING_PROOF_STORAGE_DIR ?? './storage/billing-proofs',
+    // Umur signed URL untuk melihat bukti transfer (detik). Default 1 jam.
+    proofSignedUrlTtlSeconds: parseInt(process.env.BILLING_PROOF_SIGNED_URL_TTL ?? '3600', 10),
+    // Rahasia HMAC penanda-tangan URL bukti transfer. Kosong → pakai JWT_ACCESS_SECRET.
+    proofSigningSecret: process.env.BILLING_PROOF_SIGNING_SECRET || process.env.JWT_ACCESS_SECRET,
+  },
+
   fcm: {
     projectId: process.env.FCM_PROJECT_ID,
     credentialsPath: process.env.FCM_CREDENTIALS_PATH,

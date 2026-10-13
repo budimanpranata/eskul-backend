@@ -532,6 +532,72 @@ memulihkannya). 179 unit test tetap hijau (+15 dari sebelumnya: `schools.service
 baru + penyesuaian `parents`/`reports`/`analytics`/`jwt-auth.guard` spec untuk
 `schoolId`).
 
+## Tagihan Ekskul / Billing (beyond-plan)
+
+Juga di luar rencana kerja asli — admin men-generate tagihan per siswa (per
+ekskul atau umum), ortu melihat & mengajukan pembayaran (transfer + bukti foto,
+atau tunai), admin memvalidasi, dan ada report siswa lunas/belum lunas. Modul
+`src/modules/billing/` (schema: migration `20261013110711_add_billing`, tabel
+`billing_invoices` + `billing_payments`, child tables — **tidak** punya
+`school_id` sendiri, tenancy diwarisi lewat `student.school_id`/
+`extracurricular.school_id`, konsisten dengan konvensi multi-tenant di atas).
+
+**Alur status**: `UNPAID` → (ortu ajukan bayar) → `PENDING_VERIFICATION` →
+(admin `APPROVED`) → `PAID`, atau (admin `REJECTED`) → kembali `UNPAID` (ortu
+boleh ajukan ulang). `UNPAID` juga bisa di-`CANCELLED` admin (tidak bisa kalau
+sudah `PAID`).
+
+| Path (Admin, `@Roles('ADMIN')`) | Fungsi |
+|---|---|
+| `POST /admin/billing/invoices/generate` | Generate massal: `{period,title,amount,extracurricularId?,classGrade?,dueDate?,notes?}`. Bila `extracurricularId` diisi → hanya anggota aktif ekskul itu; kosong → tagihan umum (semua siswa aktif, opsional filter `classGrade`). **Idempoten** — siswa yang sudah punya tagihan (siswa, ekskul, period) yang sama dilewati (lihat catatan teknis di bawah) |
+| `POST /admin/billing/invoices` | Tagihan satuan (ad-hoc) untuk satu siswa |
+| `GET /admin/billing/invoices` | List + filter `status`/`period`/`classGrade`/`extracurricularId`/`studentId`/`search` |
+| `GET /admin/billing/invoices/:id` | Detail + riwayat pembayaran lengkap |
+| `POST /admin/billing/invoices/:id/cancel` | Hanya bila `UNPAID` → `CANCELLED` |
+| `GET /admin/billing/report` | Rekap: `summary` (count+jumlah per status) + `rows` (daftar tagihan, ter-paginasi) — dasar laporan siswa lunas/belum lunas |
+| `GET /admin/billing/payments?status=` | Antrian pengajuan pembayaran (default `PENDING`) |
+| `PUT /admin/billing/payments/:id/verify` | `{decision:'APPROVED'\|'REJECTED', reason?}` — `APPROVED` → invoice `PAID`; `REJECTED` → invoice balik `UNPAID` + `rejectionReason`. Keduanya mengirim notifikasi push `PAYMENT_DECISION` ke ortu pengaju |
+
+| Path (Orang Tua, `@Roles('ORANGTUA')`) | Fungsi |
+|---|---|
+| `GET /parent/billing/invoices?studentId=` | Tagihan salah satu anak (wajib relasi `APPROVED`, 403 `UNAUTHORIZED_RELATION` kalau tidak) |
+| `GET /parent/billing/invoices/:id` | Detail + riwayat pembayaran |
+| `POST /parent/billing/invoices/:id/pay` (multipart) | `{method:'TRANSFER'\|'CASH', note?}` + field `file` (gambar, **wajib** utk `TRANSFER`, JPG/PNG/WebP maks 5 MB). Invoice harus `UNPAID` (409 kalau tidak) |
+| `GET /billing/payments/:id/proof` | `@Public()` — unduh/lihat bukti transfer. Otorisasi murni signed URL (HMAC + expiry), pola sama dengan unduhan laporan (Fase 3.1) |
+
+**Penyimpanan bukti transfer**: disk lokal (`BILLING_PROOF_STORAGE_DIR`,
+default `./storage/billing-proofs`) via `ReportStorage`/`LocalDiskReportStorage`
+yang sama dengan export laporan (interface generik, dipakai ulang bukan
+di-duplikasi) — token DI sendiri (`BILLING_PROOF_STORAGE`, direktori terpisah).
+
+**Catatan teknis penting — NULL bukan unique di Postgres**: `UNIQUE(student_id,
+extracurricular_id, period)` tidak cukup untuk idempotensi saat
+`extracurricular_id` NULL (tagihan umum) — Postgres menganggap dua NULL TIDAK
+sama pada index unik, jadi `skipDuplicates` Prisma saja akan tetap membuat
+baris duplikat bila `generateInvoices`/`createInvoice` dipanggil ulang tanpa
+ekskul. Diperbaiki dengan cek manual (`invoice.findMany`/`findFirst`
+berdasarkan `(studentId, extracurricularId ?? null, period)`) SEBELUM insert —
+`skipDuplicates` tetap dipakai sebagai jaring pengaman race-condition saja.
+Ada regression test untuk ini di `billing.service.spec.ts`.
+
+**Web admin**: menu "Tagihan Ekskul" (3 tab: Tagihan — generate + list +
+batalkan; Validasi Pembayaran — setujui/tolak + lihat bukti; Laporan — kartu
+ringkasan lunas/belum/menunggu/batal + tabel per siswa).
+
+**Mobile (ortu)**: tab baru "Tagihan" di `ParentShell` — daftar tagihan anak
+terpilih, detail + riwayat pembayaran via bottom sheet, form "Bayar Sekarang"
+(pilih Transfer/Tunai, ambil bukti dari galeri/kamera via `image_picker`).
+`POST /parent/link-request` tetap butuh `schoolCode` (lihat bagian multi-tenant
+di atas) — tidak terkait langsung tapi di mobile berada di alur ortu yang sama.
+
+**Verifikasi**: 28 unit test (`billing.service.spec.ts`, termasuk 2 regression
+test NULL-uniqueness di atas) + e2e `scratchpad/billing-smoke.mjs` 26/26
+assertion vs Postgres+Redis nyata (generate + re-generate idempoten, ortu
+lihat tagihan, bayar CASH → tolak → invoice balik UNPAID, bayar ulang TRANSFER
++ unggah bukti → admin setujui → invoice PAID, unduh bukti via signed URL
+(termasuk sig salah → 403), report menunjukkan status PAID, invoice PAID tidak
+bisa dibatalkan). Total **207 unit test** backend hijau.
+
 ## Skrip npm
 
 | Skrip | Fungsi |
@@ -561,6 +627,9 @@ Lihat `.env.example` untuk daftar lengkap.
 | `REPORT_STORAGE_DIR` | Direktori file export bila S3 tak dikonfigurasi (default `./storage/reports`) |
 | `REPORT_SIGNED_URL_TTL` | Umur signed URL unduhan (detik), default 3600 |
 | `REPORT_SIGNING_SECRET` | Rahasia HMAC penanda-tangan URL unduhan; kosong → pakai `JWT_ACCESS_SECRET` |
+| `BILLING_PROOF_STORAGE_DIR` | Direktori bukti transfer (default `./storage/billing-proofs`) |
+| `BILLING_PROOF_SIGNED_URL_TTL` | Umur signed URL bukti transfer (detik), default 3600 |
+| `BILLING_PROOF_SIGNING_SECRET` | Rahasia HMAC penanda-tangan URL bukti transfer; kosong → pakai `JWT_ACCESS_SECRET` |
 | `MFA_ENFORCE_ADMIN` | `true` (default): admin tanpa MFA diblok `MfaGuard`. Dev box ini `false` |
 | `MFA_ISSUER` / `MFA_CHALLENGE_TTL` | Nama di authenticator / umur token tantangan (detik) |
 | `RATE_LIMIT_ENABLED` | `true` (default). Dev box ini `false` agar smoke regresi tak kena 429 |

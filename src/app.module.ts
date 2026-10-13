@@ -22,6 +22,7 @@ import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { PeriodicReportsModule } from './modules/periodic-reports/periodic-reports.module.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { SchoolsModule } from './modules/schools/schools.module.js';
+import { BillingModule } from './modules/billing/billing.module.js';
 
 @Module({
   imports: [
@@ -48,6 +49,7 @@ import { SchoolsModule } from './modules/schools/schools.module.js';
     PeriodicReportsModule,
     AuditModule,
     SchoolsModule,
+    BillingModule,
   ],
   controllers: [AppController],
   providers: [AppService],
