@@ -62,6 +62,7 @@ backend/
 │   └── main.ts             # global prefix /api/v1, helmet+HSTS (4.3), CORS (tolak *), ValidationPipe
 ├── Dockerfile
 ├── docker-compose.yml      # postgres + redis + api
+├── deploy/                 # deploy.sh (server produksi) + README.md (arsitektur & SOP)
 ├── SECURITY-REVIEW.md      # self-review keamanan Fase 4.3 (baseline pentest)
 ├── PERFORMANCE.md          # load test + N+1 + index + cache (Fase 4.4)
 ├── MULTI-TENANT.md         # evaluasi & rencana migrasi multi-sekolah (Fase 4.4)
