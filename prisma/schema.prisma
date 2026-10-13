@@ -91,6 +91,7 @@ model User {
   invoicesCreated   Invoice[]               @relation("InvoiceCreatedBy")
   paymentsSubmitted Payment[]               @relation("PaymentSubmittedBy")
   paymentsVerified  Payment[]               @relation("PaymentVerifiedBy")
+  appSettingsUpdates AppSettings[]
 
   @@index([roleId], map: "idx_users_role")
   @@index([schoolId], map: "idx_users_school")
@@ -464,4 +465,25 @@ model Payment {
   @@index([invoiceId], map: "idx_payments_invoice")
   @@index([status], map: "idx_payments_status")
   @@map("billing_payments")
+}
+
+// ============================================
+// 11. PENGATURAN TAMPILAN APLIKASI (branding — beyond-plan)
+// ============================================
+
+// Singleton (selalu satu baris, id tetap "default") — nama aplikasi & logo
+// yang ditampilkan di layar login (web admin & mobile). Kosong/NULL → klien
+// pakai fallback bawaan (logo default di aset masing-masing app, nama "Eskul").
+// Pengaturan platform-wide (ADMIN_SUPER), bukan per-sekolah — lihat
+// MULTI-TENANT.md untuk kenapa sebagian hal tetap lintas-tenant by design.
+model AppSettings {
+  id          String   @id @default("default") @db.VarChar(20)
+  appName     String?  @map("app_name") @db.VarChar(100)
+  logoKey     String?  @map("logo_key")
+  updatedById String?  @map("updated_by") @db.Uuid
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("app_settings")
 }

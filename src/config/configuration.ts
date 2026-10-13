@@ -44,6 +44,11 @@ export default () => ({
     signingSecret: process.env.REPORT_SIGNING_SECRET || process.env.JWT_ACCESS_SECRET,
   },
 
+  branding: {
+    // Direktori lokal untuk logo aplikasi yang diunggah ADMIN_SUPER.
+    logoStorageDir: process.env.BRANDING_LOGO_STORAGE_DIR ?? './storage/branding',
+  },
+
   billing: {
     // Direktori lokal untuk bukti transfer yang diunggah ortu (gambar).
     proofStorageDir: process.env.BILLING_PROOF_STORAGE_DIR ?? './storage/billing-proofs',
